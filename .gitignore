@@ -1,0 +1,47 @@
+# Rust build artifacts
+target/
+
+# Cargo lock (optional: keep if you want reproducible builds)
+# Cargo.lock
+
+# Local cargo config
+.cargo/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Data directories (large binary files)
+data/
+data_val/
+data_txt/
+output/
+
+# Training artifacts
+training/*.pt
+training/*.bin
+
+# Python scripts data
+python_scripts/*.bin
+python_scripts/*.txt
+python_scripts/input.pgn
+
+# Backup
+backup/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment files
+.env
