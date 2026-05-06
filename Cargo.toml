@@ -19,9 +19,16 @@ path = "src/main.rs"
 name = "octopus_v3"
 path = "src/main.rs"
 
+[features]
+nnue_level_v2 = []
+nnue_level_v3 = ["nnue_level_v2"]
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+[profile.release.build-override]
+opt-level = 3

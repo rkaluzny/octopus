@@ -18,16 +18,16 @@ import time
 import random
 import signal
 
-ENGINE_PATH = "octopus_v3.exe"
+ENGINE_PATH = "ENGINE_PATH"
 INPUT_FILE = "positions.txt"
-OUTPUT_FILE = "lichess.txt"
+OUTPUT_FILE = "lichess6.txt"
 
 NUM_THREADS = 2
 MOVETIME_MS = 50
 DEEPER_MOVETIME_MS = 80
 
-MIN_EVAL = -1500
-MAX_EVAL = 1500
+MIN_EVAL = -1000
+MAX_EVAL = 1000
 
 STABILITY_THRESHOLD = 140
 WRITE_BATCH_SIZE = 500

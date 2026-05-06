@@ -241,16 +241,6 @@ Both scripts use:
 - Classification agreement (who is winning, equal)
 - Mismatch analysis (critical: sign disagreements)
 
-### Quick Start
-
-On Windows, run `datagen.bat` to launch both evaluation pipelines in parallel:
-
-```bat
-python pgn_processor.py
-start "" /B python lichess_eval.py
-start "" /B python selfplay.py
-```
-
 ---
 
 ## Training

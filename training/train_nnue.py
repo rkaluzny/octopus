@@ -164,7 +164,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=1024, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
-    parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
+    parser.add_argument('--weight-decay', type=float, default=5e-5, help='Weight decay')
     
     parser.add_argument('--accumulator-size', type=int, default=512, help='NNUE accumulator size')
     parser.add_argument('--hidden-size', type=int, default=256, help='Hidden layer size')

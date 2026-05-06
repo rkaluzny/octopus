@@ -17,6 +17,9 @@ use crate::board::{Board, Color, PieceType};
 use crate::features::{feature_index_table, ACCUMULATOR_SIZE};
 use crate::nnue::NnueWeights;
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
 #[repr(align(64))]
 #[derive(Clone)]
 pub struct NnueState {
@@ -168,6 +171,24 @@ impl NnueState {
             Color::Black => &mut self.black,
         };
 
+        // Use SIMD if available on x86_64
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    apply_piece_delta_avx2(acc, feature_weights, delta);
+                }
+                return;
+            }
+            if is_x86_feature_detected!("sse2") {
+                unsafe {
+                    apply_piece_delta_sse2(acc, feature_weights, delta);
+                }
+                return;
+            }
+        }
+
+        // Fallback to scalar
         for i in 0..ACCUMULATOR_SIZE {
             unsafe {
                 *acc.get_unchecked_mut(i) += delta * *feature_weights.get_unchecked(i) as i32;
@@ -189,5 +210,65 @@ impl NnueState {
             Color::White => self.white_king_sq,
             Color::Black => self.black_king_sq,
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn apply_piece_delta_sse2(acc: &mut [i32; ACCUMULATOR_SIZE], feature_weights: &[i8], delta: i32) {
+    let delta_vec = _mm_set1_epi32(delta);
+    let zero = _mm_setzero_si128();
+
+    for i in (0..ACCUMULATOR_SIZE).step_by(16) {
+        let w8 = _mm_loadu_si128(feature_weights.as_ptr().add(i) as *const __m128i);
+        let sign = _mm_cmpgt_epi8(zero, w8);
+        let w16_lo = _mm_unpacklo_epi8(w8, sign);
+        let w16_hi = _mm_unpackhi_epi8(w8, sign);
+
+        let sign_lo = _mm_srai_epi16(w16_lo, 15);
+        let sign_hi = _mm_srai_epi16(w16_hi, 15);
+
+        let w32_0 = _mm_unpacklo_epi16(w16_lo, sign_lo);
+        let w32_1 = _mm_unpackhi_epi16(w16_lo, sign_lo);
+        let w32_2 = _mm_unpacklo_epi16(w16_hi, sign_hi);
+        let w32_3 = _mm_unpackhi_epi16(w16_hi, sign_hi);
+
+        let w32_0 = _mm_mullo_epi32(w32_0, delta_vec);
+        let w32_1 = _mm_mullo_epi32(w32_1, delta_vec);
+        let w32_2 = _mm_mullo_epi32(w32_2, delta_vec);
+        let w32_3 = _mm_mullo_epi32(w32_3, delta_vec);
+
+        let acc_ptr = acc.as_mut_ptr().add(i);
+        let a0 = _mm_loadu_si128(acc_ptr as *const __m128i);
+        let a1 = _mm_loadu_si128(acc_ptr.add(4) as *const __m128i);
+        let a2 = _mm_loadu_si128(acc_ptr.add(8) as *const __m128i);
+        let a3 = _mm_loadu_si128(acc_ptr.add(12) as *const __m128i);
+
+        let a0 = _mm_add_epi32(a0, w32_0);
+        let a1 = _mm_add_epi32(a1, w32_1);
+        let a2 = _mm_add_epi32(a2, w32_2);
+        let a3 = _mm_add_epi32(a3, w32_3);
+
+        _mm_storeu_si128(acc_ptr as *mut __m128i, a0);
+        _mm_storeu_si128(acc_ptr.add(4) as *mut __m128i, a1);
+        _mm_storeu_si128(acc_ptr.add(8) as *mut __m128i, a2);
+        _mm_storeu_si128(acc_ptr.add(12) as *mut __m128i, a3);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_piece_delta_avx2(acc: &mut [i32; ACCUMULATOR_SIZE], feature_weights: &[i8], delta: i32) {
+    let delta_vec = _mm256_set1_epi32(delta);
+
+    for i in (0..ACCUMULATOR_SIZE).step_by(8) {
+        let w8 = _mm_loadl_epi64(feature_weights.as_ptr().add(i) as *const __m128i);
+        let w32 = _mm256_cvtepi8_epi32(w8);
+        let w32 = _mm256_mullo_epi32(w32, delta_vec);
+
+        let acc_ptr = acc.as_mut_ptr().add(i);
+        let a = _mm256_loadu_si256(acc_ptr as *const __m256i);
+        let a = _mm256_add_epi32(a, w32);
+        _mm256_storeu_si256(acc_ptr as *mut __m256i, a);
     }
 }
