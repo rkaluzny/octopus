@@ -1,6 +1,11 @@
 <p align="center">
   <img src="docs/logo.png" alt="Octopus Engine Logo" width="200"/>
 </p>
+<p align="center">
+<i>
+Generated with Gemini nano banana 2
+</i>
+</p>
 
 <h1 align="center">Octopus</h1>
 
@@ -33,29 +38,29 @@ The engine uses a Principal Variation Search (PVS) framework with iterative deep
 
 ### Core Algorithm
 
-| Technique | Description |
-|---|---|
-| **PVS** | Principal Variation Search; first move at full window, remaining moves with zero-width searches |
-| **Iterative Deepening** | Depth increases from 1 to the target; best move and score carried forward |
-| **Aspiration Windows** | Window centered on previous iteration's score; re-searches on fail-high/fail-low |
+| Technique               | Description                                                                                     |
+| ----------------------- | ----------------------------------------------------------------------------------------------- |
+| **PVS**                 | Principal Variation Search; first move at full window, remaining moves with zero-width searches |
+| **Iterative Deepening** | Depth increases from 1 to the target; best move and score carried forward                       |
+| **Aspiration Windows**  | Window centered on previous iteration's score; re-searches on fail-high/fail-low                |
 
 ### Pruning & Reductions
 
-| Technique | Condition | Effect |
-|---|---|---|
-| **Late Move Reductions (LMR)** | Quiet moves after the first few at depth >= 4 | Reduced-depth zero-window search |
-| **Late Move Pruning (LMP)** | Quiet moves beyond a depth-dependent count threshold at shallow depths | Pruned without search |
-| **Null Move Pruning** | Not in check, sufficient material, static eval >= beta at depth >= 3 | Pass the turn; if score >= beta, prune |
-| **Futility Pruning** | Depth <= 3, not in check, not PV, static eval + margin < alpha | Pruned without search |
-| **Razoring** | Depth <= 2, static eval + margin < alpha | Quick quiescence check to prune |
-| **Reverse Futility Pruning** | Depth 1-2, static eval - margin >= beta | Pruned and return static eval |
-| **Probcut** | Depth >= 10, quiet moves beyond move threshold | Reduced-depth search for fast cutoffs |
-| **Delta Pruning** | Quiescence search, stand_pat + margin < alpha | Skip captures unlikely to raise alpha |
+| Technique                      | Condition                                                              | Effect                                 |
+| ------------------------------ | ---------------------------------------------------------------------- | -------------------------------------- |
+| **Late Move Reductions (LMR)** | Quiet moves after the first few at depth >= 4                          | Reduced-depth zero-window search       |
+| **Late Move Pruning (LMP)**    | Quiet moves beyond a depth-dependent count threshold at shallow depths | Pruned without search                  |
+| **Null Move Pruning**          | Not in check, sufficient material, static eval >= beta at depth >= 3   | Pass the turn; if score >= beta, prune |
+| **Futility Pruning**           | Depth <= 3, not in check, not PV, static eval + margin < alpha         | Pruned without search                  |
+| **Razoring**                   | Depth <= 2, static eval + margin < alpha                               | Quick quiescence check to prune        |
+| **Reverse Futility Pruning**   | Depth 1-2, static eval - margin >= beta                                | Pruned and return static eval          |
+| **Probcut**                    | Depth >= 10, quiet moves beyond move threshold                         | Reduced-depth search for fast cutoffs  |
+| **Delta Pruning**              | Quiescence search, stand_pat + margin < alpha                          | Skip captures unlikely to raise alpha  |
 
 ### Extensions
 
-| Technique | Description |
-|---|---|
+| Technique              | Description                                                                       |
+| ---------------------- | --------------------------------------------------------------------------------- | -------------------- |
 | **Singular Extension** | TT exact score significantly above threshold at PV nodes; tested move is singular | Extension by one ply |
 
 ### Move Ordering
@@ -85,21 +90,21 @@ The default evaluation mode is a **Handcrafted Evaluation (HCE)** based on the P
 
 ### Components
 
-| Component | Description |
-|---|---|
-| **Material** | Piece values for pawn, knight, bishop, rook, queen |
-| **Piece-Square Tables (PSTs)** | Positional bonuses derived from PeSTO for all piece types |
-| **Pawn Structure** | Penalties for isolated and doubled pawns |
-| **Passed Pawns** | Bonus scaling with proximity to promotion; king support bonus |
-| **Mobility** | Safe-move counting for knights, bishops, rooks, and queens (excludes squares attacked by enemy pawns) |
-| **King Safety** | Enemy attacker counting, pawn shield, open-file penalty near king |
-| **Outposts** | Knight and bishop outposts on pawn-safe squares in enemy territory |
-| **Rook on Open File** | Bonus for rooks on fully or semi-open files |
-| **Trapped Bishops** | Penalty for bishops blocked by own pawns in the opening |
-| **Bishop Pair** | Bonus when both bishops are present |
-| **Castling Bonus** | Encourages king safety in the middlegame |
-| **Development** | Minor piece development and center control bonuses scaled by opening factor |
-| **Tempo** | Small bonus for the side to move, fading toward the endgame |
+| Component                      | Description                                                                                           |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| **Material**                   | Piece values for pawn, knight, bishop, rook, queen                                                    |
+| **Piece-Square Tables (PSTs)** | Positional bonuses derived from PeSTO for all piece types                                             |
+| **Pawn Structure**             | Penalties for isolated and doubled pawns                                                              |
+| **Passed Pawns**               | Bonus scaling with proximity to promotion; king support bonus                                         |
+| **Mobility**                   | Safe-move counting for knights, bishops, rooks, and queens (excludes squares attacked by enemy pawns) |
+| **King Safety**                | Enemy attacker counting, pawn shield, open-file penalty near king                                     |
+| **Outposts**                   | Knight and bishop outposts on pawn-safe squares in enemy territory                                    |
+| **Rook on Open File**          | Bonus for rooks on fully or semi-open files                                                           |
+| **Trapped Bishops**            | Penalty for bishops blocked by own pawns in the opening                                               |
+| **Bishop Pair**                | Bonus when both bishops are present                                                                   |
+| **Castling Bonus**             | Encourages king safety in the middlegame                                                              |
+| **Development**                | Minor piece development and center control bonuses scaled by opening factor                           |
+| **Tempo**                      | Small bonus for the side to move, fading toward the endgame                                           |
 
 The final score is computed as:
 
@@ -205,6 +210,7 @@ Two parallel evaluation scripts generate labeled data:
 **`selfplay.py`** -- The engine plays games against itself, evaluating each position with stability verification. Random moves are occasionally played (default 8%) to increase diversity. Positions are deduplicated via MD5 hash.
 
 Both scripts use:
+
 - Multi-threaded workers (configurable `NUM_THREADS`)
 - Engine restart on failure
 - Batched writing to disk
@@ -215,20 +221,21 @@ Both scripts use:
 
 `bin_converter.py` converts the text output (`fen | eval_cp` format) into a compact binary format (112 bytes per position):
 
-| Offset | Size | Field |
-|---|---|---|
-| 0 | 8 | Zobrist hash key |
-| 8-55 | 48 | 6 white piece bitboards (8 bytes each) |
-| 56-103 | 48 | 6 black piece bitboards (8 bytes each) |
-| 104 | 4 | Evaluation in centipawns (signed int32) |
-| 108 | 1 | Side to move (0=white, 1=black) |
-| 109 | 1 | Castling rights bitmask |
-| 110 | 1 | En passant square (255=none) |
-| 111 | 1 | Padding (always 0) |
+| Offset | Size | Field                                   |
+| ------ | ---- | --------------------------------------- |
+| 0      | 8    | Zobrist hash key                        |
+| 8-55   | 48   | 6 white piece bitboards (8 bytes each)  |
+| 56-103 | 48   | 6 black piece bitboards (8 bytes each)  |
+| 104    | 4    | Evaluation in centipawns (signed int32) |
+| 108    | 1    | Side to move (0=white, 1=black)         |
+| 109    | 1    | Castling rights bitmask                 |
+| 110    | 1    | En passant square (255=none)            |
+| 111    | 1    | Padding (always 0)                      |
 
 ### Step 4: Compare Against Reference
 
 `compare.py` compares your engine's evaluation against Stockfish on a sample of positions, reporting:
+
 - Average raw difference in centipawns
 - RMSE
 - Classification agreement (who is winning, equal)
@@ -266,11 +273,11 @@ Centipawn score
 
 ### Files
 
-| File | Purpose |
-|---|---|
+| File              | Purpose                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------- |
 | `nnue_dataset.py` | Binary dataset loader with king-relative feature extraction, memory-mapped file support |
-| `nnue_model.py` | PyTorch NNUE model with quantized weight export in ONUE binary format |
-| `train_nnue.py` | Training script with MAE/correlation metrics, checkpoints, and weight export |
+| `nnue_model.py`   | PyTorch NNUE model with quantized weight export in ONUE binary format                   |
+| `train_nnue.py`   | Training script with MAE/correlation metrics, checkpoints, and weight export            |
 
 ### Dataset Format
 
@@ -303,36 +310,37 @@ python train_nnue.py \
 
 ### Arguments
 
-| Argument | Default | Description |
-|---|---|---|
-| `--train-bin` | - | Path to training binary file |
-| `--train-dir` | - | Path to folder with training `.bin` files |
-| `--val-bin` | - | Path to validation binary file |
-| `--val-dir` | - | Path to folder with validation `.bin` files |
-| `--output-dir` | `./output` | Output directory for models and weights |
-| `--epochs` | 50 | Number of training epochs |
-| `--batch-size` | 1024 | Batch size |
-| `--lr` | 1e-3 | Learning rate |
-| `--weight-decay` | 1e-4 | AdamW weight decay |
-| `--accumulator-size` | 512 | NNUE accumulator size |
-| `--hidden-size` | 256 | Hidden layer size |
-| `--clamp-eval` | 3000 | Clamp eval to +/- N centipawns |
-| `--gpu` | false | Use GPU if available |
+| Argument             | Default    | Description                                 |
+| -------------------- | ---------- | ------------------------------------------- |
+| `--train-bin`        | -          | Path to training binary file                |
+| `--train-dir`        | -          | Path to folder with training `.bin` files   |
+| `--val-bin`          | -          | Path to validation binary file              |
+| `--val-dir`          | -          | Path to folder with validation `.bin` files |
+| `--output-dir`       | `./output` | Output directory for models and weights     |
+| `--epochs`           | 50         | Number of training epochs                   |
+| `--batch-size`       | 1024       | Batch size                                  |
+| `--lr`               | 1e-3       | Learning rate                               |
+| `--weight-decay`     | 1e-4       | AdamW weight decay                          |
+| `--accumulator-size` | 512        | NNUE accumulator size                       |
+| `--hidden-size`      | 256        | Hidden layer size                           |
+| `--clamp-eval`       | 3000       | Clamp eval to +/- N centipawns              |
+| `--gpu`              | false      | Use GPU if available                        |
 
 ### Output Files
 
 After training, the following files are produced:
 
-| File | Description |
-|---|---|
-| `best_model.pt` | Best model by validation correlation |
-| `final_model.pt` | Final model weights (PyTorch) |
-| `nnue_weights.bin` | Quantized weights (int8/int16) in ONUE format for the Rust engine |
-| `checkpoint_epoch_N.pt` | Periodic checkpoints with optimizer state |
+| File                    | Description                                                       |
+| ----------------------- | ----------------------------------------------------------------- |
+| `best_model.pt`         | Best model by validation correlation                              |
+| `final_model.pt`        | Final model weights (PyTorch)                                     |
+| `nnue_weights.bin`      | Quantized weights (int8/int16) in ONUE format for the Rust engine |
+| `checkpoint_epoch_N.pt` | Periodic checkpoints with optimizer state                         |
 
 ### Evaluation Metrics
 
 The training script reports:
+
 - **MAE** (Mean Absolute Error) on validation set -- lower is better
 - **Correlation** (Pearson) between predictions and tanh-scaled targets -- higher is better
 
@@ -387,10 +395,10 @@ The engine communicates via the UCI protocol and can be used with any compatible
 
 The engine supports two SIMD build levels controlled by the `NNUE_BUILD_LEVEL` environment variable:
 
-| Level | Description |
-|---|---|
-| `v2` | SSE2 acceleration (x86-64-v2) |
-| `v3` | AVX2 acceleration (x86-64-v3, default) |
+| Level | Description                            |
+| ----- | -------------------------------------- |
+| `v2`  | SSE2 acceleration (x86-64-v2)          |
+| `v3`  | AVX2 acceleration (x86-64-v3, default) |
 
 ```bash
 NNUE_BUILD_LEVEL=v3 cargo build --release
