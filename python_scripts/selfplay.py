@@ -19,33 +19,69 @@ import time
 import random
 import hashlib
 import chess
+import chess.pgn
 import signal
 
 # CONFIG
 
 ENGINE_PATH = "ENGINE_PATH"
-OUTPUT_FILE = "selfplay7.txt"
+OUTPUT_FILE = "selfplay11.txt"
 
-NUM_THREADS = 2
-GAMES_PER_THREAD = 1000
+NUM_THREADS = 4
+GAMES_PER_THREAD = 700
 
-MOVETIME_MS = 70
+MOVETIME_MS = 60
 DEEPER_MOVETIME_MS = 200
 
-MAX_PLIES = 300
-MIN_PLY_TO_SAVE = 8
-SAMPLE_INTERVAL = 3
+MAX_PLIES = 100
+MIN_PLY_TO_SAVE = 12
+SAMPLE_INTERVAL = 1
 
-RANDOM_MOVE_PROB = 0.08
+RANDOM_MOVE_PROB = 0
 
-MIN_EVAL = -1000
-MAX_EVAL = 1000
+MIN_EVAL = -700
+MAX_EVAL = 700
 
 STABILITY_THRESHOLD = 100
 
 WRITE_BATCH_SIZE = 500
 
+OPENING_BOOK_PGN = "opening.pgn"  # Path to PGN file for opening book, e.g. "openings.pgn"
+OPENING_BOOK_PLIES = 12  # Number of plies to play from opening book
+
 stop_event = threading.Event()
+
+
+# OPENING BOOK
+
+def load_opening_book(pgn_path):
+    games = []
+    try:
+        with open(pgn_path, "r") as f:
+            while True:
+                game = chess.pgn.read_game(f)
+                if game is None:
+                    break
+                moves = []
+                node = game
+                while node.variations:
+                    node = node.variation(0)
+                    moves.append(node.move.uci())
+                if moves:
+                    games.append(moves)
+        print(f"Loaded {len(games)} opening book games from {pgn_path}")
+    except Exception as e:
+        print(f"Failed to load opening book: {e}")
+        return []
+    return games
+
+
+def get_random_opening(book_games, max_plies):
+    if not book_games:
+        return []
+    game_moves = random.choice(book_games)
+    plies_to_play = min(max_plies, len(game_moves))
+    return game_moves[:plies_to_play]
 
 
 # ENGINE
@@ -151,7 +187,7 @@ def restart_engine(thread_id):
         return None
 
 
-def worker(thread_id, out_queue):
+def worker(thread_id, out_queue, opening_book_games=None):
     engine = restart_engine(thread_id)
     if engine is None:
         return
@@ -169,7 +205,15 @@ def worker(thread_id, out_queue):
 
         board = chess.Board()
         moves = []
-        ply = 0
+
+        if opening_book_games:
+            opening_moves = get_random_opening(opening_book_games, OPENING_BOOK_PLIES)
+            for uci_move in opening_moves:
+                board.push_uci(uci_move)
+                moves.append(uci_move)
+            print(f"[T{thread_id}] Applied {len(opening_moves)} opening book moves")
+
+        ply = len(moves)
 
         while ply < MAX_PLIES and not stop_event.is_set():
             if moves:
@@ -314,11 +358,15 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     start = time.time()
 
+    opening_book_games = []
+    if OPENING_BOOK_PGN:
+        opening_book_games = load_opening_book(OPENING_BOOK_PGN)
+
     out_queue = queue.Queue(maxsize=10000)
 
     threads = []
     for i in range(NUM_THREADS):
-        t = threading.Thread(target=worker, args=(i, out_queue))
+        t = threading.Thread(target=worker, args=(i, out_queue, opening_book_games))
         t.start()
         threads.append(t)
 

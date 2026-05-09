@@ -12,6 +12,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 use crate::accumulator::{NnueState, NnueUndo, PieceDelta};
 use crate::board::{Board, Color, PieceType};
@@ -29,7 +30,8 @@ const OUTPUT_SCALE: f32 = 128.0;
 const CP_SCALE: f32 = 600.0;
 
 const FEATURE_WEIGHT_COUNT: usize = INPUT_FEATURES * ACCUMULATOR_SIZE;
-const HIDDEN_WEIGHT_COUNT: usize = HIDDEN_SIZE * (ACCUMULATOR_SIZE * 2);
+const HIDDEN_INPUT_SIZE: usize = ACCUMULATOR_SIZE;
+const HIDDEN_WEIGHT_COUNT: usize = HIDDEN_SIZE * HIDDEN_INPUT_SIZE;
 
 #[repr(align(64))]
 pub struct NnueWeights {
@@ -42,6 +44,7 @@ pub struct NnueWeights {
     hidden_scale: f32,
     output_scale: f32,
     cp_scale: f32,
+    output_factor: f32,
 }
 
 impl NnueWeights {
@@ -56,6 +59,7 @@ impl NnueWeights {
             hidden_scale: HIDDEN_SCALE,
             output_scale: OUTPUT_SCALE,
             cp_scale: CP_SCALE,
+            output_factor: CP_SCALE / OUTPUT_SCALE,
         }
     }
 
@@ -112,11 +116,26 @@ impl NnueWeights {
         let hidden_scale = read_f32(&bytes, &mut cursor)?;
         let output_scale = read_f32(&bytes, &mut cursor)?;
         let cp_scale = read_f32(&bytes, &mut cursor)?;
+        let output_factor = cp_scale / output_scale;
 
         let feature_count = input_features.checked_mul(accumulator_size)?;
         let hidden_count = hidden_size.checked_mul(accumulator_size.checked_mul(2)?)?;
         let feature_weights_raw = read_i8_vec(&bytes, &mut cursor, feature_count)?;
         let hidden_weights_raw = read_i16_vec(&bytes, &mut cursor, hidden_count)?;
+        
+        // Transform 1024-wide hidden weights to 512-wide by combining mirrored pairs.
+        // Original format: hidden_inputs[i] == hidden_inputs[1023-i], so we combine
+        // weights[i] + weights[1023-i] for each pair.
+        let mut hidden_weights = Vec::with_capacity(HIDDEN_SIZE * HIDDEN_INPUT_SIZE);
+        for neuron in 0..HIDDEN_SIZE {
+            let base = neuron * (ACCUMULATOR_SIZE * 2);
+            for i in 0..ACCUMULATOR_SIZE {
+                let w1 = hidden_weights_raw[base + i] as i32;
+                let w2 = hidden_weights_raw[base + (ACCUMULATOR_SIZE * 2 - 1 - i)] as i32;
+                hidden_weights.push((w1 + w2) as i16);
+            }
+        }
+        
         let hidden_bias_raw = read_i16_vec(&bytes, &mut cursor, hidden_size)?;
         let output_weights_raw = read_i16_vec(&bytes, &mut cursor, hidden_size)?;
         let output_bias_raw = read_i16_vec(&bytes, &mut cursor, 1)?;
@@ -127,7 +146,7 @@ impl NnueWeights {
 
         Some(Self {
             feature_weights: feature_weights_raw,
-            hidden_weights: hidden_weights_raw,
+            hidden_weights,
             hidden_bias: hidden_bias_raw,
             output_weights: output_weights_raw,
             output_bias: output_bias_raw[0],
@@ -135,6 +154,7 @@ impl NnueWeights {
             hidden_scale,
             output_scale,
             cp_scale,
+            output_factor,
         })
     }
 
@@ -146,13 +166,13 @@ impl NnueWeights {
 
     #[inline(always)]
     pub fn hidden_weights_for_neuron(&self, neuron: usize) -> &[i16] {
-        let start = neuron * (ACCUMULATOR_SIZE * 2);
-        &self.hidden_weights[start..start + (ACCUMULATOR_SIZE * 2)]
+        let start = neuron * HIDDEN_INPUT_SIZE;
+        &self.hidden_weights[start..start + HIDDEN_INPUT_SIZE]
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum EvalBackend {
+pub enum EvalBackend {
     Scalar,
     Sse2,
     Avx2,
@@ -178,7 +198,7 @@ pub struct NnueEvaluator {
     initialized: bool,
     weights_path: String,
     pub weights_loaded: bool,
-    backend: EvalBackend,
+    pub backend: EvalBackend,
 }
 
 impl NnueEvaluator {
@@ -265,7 +285,7 @@ impl NnueEvaluator {
     }
 
     pub fn reset(&mut self, board: &Board) {
-        self.state.rebuild_from_board(board, &self.weights);
+        self.state.rebuild_from_board(board, &self.weights, self.backend);
         self.undo_stack.clear();
         self.initialized = true;
     }
@@ -386,16 +406,16 @@ impl NnueEvaluator {
             if moving_color == Color::White {
                 self.state.white_king_sq = temp.king_square(Color::White);
                 self.state.black_king_sq = board.king_square(Color::Black);
-                self.state.apply_piece_deltas(&deltas[..len], &self.weights);
+                self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend);
                 self.rebuild_side(&temp, Color::White);
             } else {
                 self.state.white_king_sq = board.king_square(Color::White);
                 self.state.black_king_sq = temp.king_square(Color::Black);
-                self.state.apply_piece_deltas(&deltas[..len], &self.weights);
+                self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend);
                 self.rebuild_side(&temp, Color::Black);
             }
         } else {
-            self.state.apply_piece_deltas(&deltas[..len], &self.weights);
+            self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend);
         }
 
         self.undo_stack.push(undo);
@@ -432,6 +452,7 @@ impl NnueEvaluator {
                         piece,
                         square,
                         1,
+                        self.backend,
                         &self.weights,
                     );
                     pieces &= pieces - 1;
@@ -457,13 +478,14 @@ impl NnueEvaluator {
             } else {
                 for i in (0..undo.delta_len as usize).rev() {
                     let delta = undo.deltas[i];
-                    self.state.apply_piece_delta(
-                        delta.piece_color,
-                        delta.piece,
-                        delta.square,
-                        -delta.sign,
-                        &self.weights,
-                    );
+                self.state.apply_piece_delta(
+                    delta.piece_color,
+                    delta.piece,
+                    delta.square,
+                    -delta.sign,
+                    &self.weights,
+                    self.backend,
+                );
                 }
             }
         }
@@ -475,36 +497,29 @@ impl NnueEvaluator {
         }
 
         let acc = self.state.current(board.side_to_move);
-        let output_factor = self.weights.cp_scale / self.weights.output_scale;
+        let output_factor = self.weights.output_factor;
 
-        // Stack allocate the clamped accumulators
-        let mut activated_acc: [i16; ACCUMULATOR_SIZE] = [0; ACCUMULATOR_SIZE];
-        let mut mirrored_acc: [i16; ACCUMULATOR_SIZE] = [0; ACCUMULATOR_SIZE];
-
-        // Clamp values once upfront - use backend-specific implementation
+        // Pack the accumulator into the hidden input vector using SIMD if available.
+        let mut hidden_inputs = [0i16; HIDDEN_INPUT_SIZE];
         match self.backend {
-            EvalBackend::Avx2 => unsafe {
-                clamp_avx2(acc, &mut activated_acc, &mut mirrored_acc);
-            }
-            EvalBackend::Sse2 => unsafe {
-                clamp_sse2(acc, &mut activated_acc, &mut mirrored_acc);
-            }
-            EvalBackend::Scalar => {
-                clamp_scalar(acc, &mut activated_acc, &mut mirrored_acc);
-            }
+            #[cfg(target_arch = "x86_64")]
+            EvalBackend::Avx2 => unsafe { clamp_avx2(acc, &mut hidden_inputs); }
+            #[cfg(target_arch = "x86_64")]
+            EvalBackend::Sse2 => unsafe { clamp_sse2(acc, &mut hidden_inputs); }
+            _ => clamp_scalar(acc, &mut hidden_inputs),
         }
 
-        // Fast integer arithmetic for hidden layer - compute all 256 neurons
+        // Fast integer arithmetic for hidden layer - compute all 256 neurons.
         let mut hidden = [0i16; HIDDEN_SIZE];
         match self.backend {
             EvalBackend::Avx2 => unsafe {
-                compute_hidden_layer_avx2(&self.weights, &activated_acc, &mirrored_acc, &mut hidden);
+                compute_hidden_layer_avx2(&self.weights, &hidden_inputs, &mut hidden);
             }
             EvalBackend::Sse2 => unsafe {
-                compute_hidden_layer_sse2(&self.weights, &activated_acc, &mirrored_acc, &mut hidden);
+                compute_hidden_layer_sse2(&self.weights, &hidden_inputs, &mut hidden);
             }
             EvalBackend::Scalar => {
-                compute_hidden_layer_scalar(&self.weights, &activated_acc, &mirrored_acc, &mut hidden);
+                compute_hidden_layer_scalar(&self.weights, &hidden_inputs, &mut hidden);
             }
         }
 
@@ -518,6 +533,60 @@ impl NnueEvaluator {
         let cp_score = ((out as f64) * (output_factor as f64)).round() as i32;
         cp_score.clamp(-30_000, 30_000)
     }
+
+    /// Run a single evaluation with detailed timing breakdown for profiling.
+    /// Returns (score, clamp_time_ns, hidden_time_ns, output_time_ns)
+    pub fn profile_evaluate(&self, board: &Board) -> (i32, u64, u64, u64) {
+        if !self.initialized {
+            return (0, 0, 0, 0);
+        }
+
+        let acc = self.state.current(board.side_to_move);
+        let output_factor = self.weights.output_factor;
+
+        let mut hidden_inputs = [0i16; HIDDEN_INPUT_SIZE];
+
+        // Time clamping
+        let clamp_start = Instant::now();
+        match self.backend {
+            #[cfg(target_arch = "x86_64")]
+            EvalBackend::Avx2 => unsafe { clamp_avx2(acc, &mut hidden_inputs); }
+            #[cfg(target_arch = "x86_64")]
+            EvalBackend::Sse2 => unsafe { clamp_sse2(acc, &mut hidden_inputs); }
+            _ => clamp_scalar(acc, &mut hidden_inputs),
+        }
+        let clamp_time = clamp_start.elapsed().as_nanos() as u64;
+
+        // Time hidden layer
+        let mut hidden = [0i16; HIDDEN_SIZE];
+        let hidden_start = Instant::now();
+        match self.backend {
+            EvalBackend::Avx2 => unsafe {
+                compute_hidden_layer_avx2(&self.weights, &hidden_inputs, &mut hidden);
+            }
+            EvalBackend::Sse2 => unsafe {
+                compute_hidden_layer_sse2(&self.weights, &hidden_inputs, &mut hidden);
+            }
+            EvalBackend::Scalar => {
+                compute_hidden_layer_scalar(&self.weights, &hidden_inputs, &mut hidden);
+            }
+        }
+        let hidden_time = hidden_start.elapsed().as_nanos() as u64;
+
+        // Time output layer
+        let out_start = Instant::now();
+        let out = match self.backend {
+            EvalBackend::Avx2 => unsafe { dot_product_avx2(&hidden, &self.weights.output_weights) }
+            EvalBackend::Sse2 => unsafe { dot_product_sse2(&hidden, &self.weights.output_weights) }
+            EvalBackend::Scalar => dot_product_scalar(&hidden, &self.weights.output_weights),
+        } + self.weights.output_bias as i64;
+        let output_time = out_start.elapsed().as_nanos() as u64;
+
+        let cp_score = ((out as f64) * (output_factor as f64)).round() as i32;
+        let score = cp_score.clamp(-30_000, 30_000);
+
+        (score, clamp_time, hidden_time, output_time)
+    }
 }
 
 #[inline(always)]
@@ -527,115 +596,26 @@ fn dot_product_scalar(lhs: &[i16], rhs: &[i16]) -> i64 {
         .fold(0i64, |acc, (&a, &b)| acc + (a as i64) * (b as i64))
 }
 
-#[inline]
-fn clamp_scalar(acc: &[i32], activated: &mut [i16; ACCUMULATOR_SIZE], mirrored: &mut [i16; ACCUMULATOR_SIZE]) {
-    for i in 0..ACCUMULATOR_SIZE {
-        let clamped = acc[i].clamp(0, 127) as i16;
-        activated[i] = clamped;
-        mirrored[ACCUMULATOR_SIZE - 1 - i] = clamped;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse2")]
-unsafe fn clamp_sse2(acc: &[i32], activated: &mut [i16; ACCUMULATOR_SIZE], mirrored: &mut [i16; ACCUMULATOR_SIZE]) {
-    let zero = _mm_setzero_si128();
-    let max_val = _mm_set1_epi32(127);
-    let mut i = 0usize;
-    
-    while i + 4 <= acc.len() {
-        let values = _mm_loadu_si128(acc.as_ptr().add(i) as *const __m128i);
-        let clamped = _mm_max_epi32(zero, _mm_min_epi32(values, max_val));
-        let packed = _mm_packs_epi32(clamped, zero);
-        
-        _mm_storel_epi64(activated.as_mut_ptr().add(i) as *mut __m128i, packed);
-        
-        let reversed = _mm_shufflelo_epi16(packed, 0x1B);
-        let mirrored_idx = ACCUMULATOR_SIZE - 4 - i;
-        _mm_storel_epi64(mirrored.as_mut_ptr().add(mirrored_idx) as *mut __m128i, reversed);
-        
-        i += 4;
-    }
-    
-    while i < acc.len() {
-        let clamped = acc[i].clamp(0, 127) as i16;
-        activated[i] = clamped;
-        mirrored[ACCUMULATOR_SIZE - 1 - i] = clamped;
-        i += 1;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn clamp_avx2(acc: &[i32], activated: &mut [i16; ACCUMULATOR_SIZE], mirrored: &mut [i16; ACCUMULATOR_SIZE]) {
-    let zero = _mm256_setzero_si256();
-    let max_val = _mm256_set1_epi32(127);
-    let mut i = 0usize;
-    
-    // Process 8 elements at a time
-    while i + 8 <= acc.len() {
-        let values = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
-        let clamped = _mm256_max_epi32(zero, _mm256_min_epi32(values, max_val));
-        let packed = _mm256_packs_epi32(clamped, zero);
-        
-        // Extract and store - packs_epi32 puts results in lo and hi parts
-        let _lo = _mm256_castsi256_si128(packed);
-        let _hi = _mm256_extracti128_si256(packed, 1);
-        
-        // For mirrored, reverse the order
-        let mirror_idx = ACCUMULATOR_SIZE - 8 - i;
-        
-        // Extract individual values for safer handling
-        for j in 0..8 {
-            let clamped_val = acc[i + j].clamp(0, 127) as i16;
-            activated[i + j] = clamped_val;
-            mirrored[mirror_idx + (7 - j)] = clamped_val;
-        }
-        
-        i += 8;
-    }
-    
-    // Cleanup remainder
-    while i < acc.len() {
-        let clamped = acc[i].clamp(0, 127) as i16;
-        activated[i] = clamped;
-        mirrored[ACCUMULATOR_SIZE - 1 - i] = clamped;
-        i += 1;
-    }
-}
-
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn dot_product_sse2(lhs: &[i16], rhs: &[i16]) -> i64 {
-    let mut sum1 = _mm_setzero_si128();
-    let mut sum2 = _mm_setzero_si128();
+    let mut sum = _mm_setzero_si128();
     let mut i = 0usize;
-    
-    // Process in pairs to parallelize
-    while i + 16 <= lhs.len() {
-        let a1 = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
-        let b1 = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
-        sum1 = _mm_add_epi32(sum1, _mm_madd_epi16(a1, b1));
-        
-        let a2 = _mm_loadu_si128(lhs.as_ptr().add(i + 8) as *const __m128i);
-        let b2 = _mm_loadu_si128(rhs.as_ptr().add(i + 8) as *const __m128i);
-        sum2 = _mm_add_epi32(sum2, _mm_madd_epi16(a2, b2));
-        
-        i += 16;
-    }
-    
-    // Finalize
-    while i < lhs.len() {
+
+    while i + 8 <= lhs.len() {
         let a = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
         let b = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
-        sum1 = _mm_add_epi32(sum1, _mm_madd_epi16(a, b));
+        sum = _mm_add_epi32(sum, _mm_madd_epi16(a, b));
         i += 8;
     }
-    
-    let sum = _mm_add_epi32(sum1, sum2);
-    let mut lanes = [0i32; 4];
-    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, sum);
-    lanes.iter().map(|&lane| lane as i64).sum()
+
+    let mut total = horizontal_sum_i32_sse2(sum);
+    while i < lhs.len() {
+        total += (lhs[i] as i64) * (rhs[i] as i64);
+        i += 1;
+    }
+
+    total
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -643,8 +623,7 @@ unsafe fn dot_product_sse2(lhs: &[i16], rhs: &[i16]) -> i64 {
 unsafe fn dot_product_avx2(lhs: &[i16], rhs: &[i16]) -> i64 {
     let mut sum = _mm256_setzero_si256();
     let mut i = 0usize;
-    
-    // Process with good alignment
+
     while i + 16 <= lhs.len() {
         let a = _mm256_loadu_si256(lhs.as_ptr().add(i) as *const __m256i);
         let b = _mm256_loadu_si256(rhs.as_ptr().add(i) as *const __m256i);
@@ -652,14 +631,75 @@ unsafe fn dot_product_avx2(lhs: &[i16], rhs: &[i16]) -> i64 {
         i += 16;
     }
 
-    let mut lanes = [0i32; 8];
-    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, sum);
-    lanes.iter().map(|&lane| lane as i64).sum()
+    let mut total = horizontal_sum_i32_avx2(sum);
+    while i < lhs.len() {
+        total += (lhs[i] as i64) * (rhs[i] as i64);
+        i += 1;
+    }
+
+    total
 }
 
-// Scalar hidden layer computation
 #[inline]
-fn compute_hidden_layer_scalar(weights: &NnueWeights, activated: &[i16; ACCUMULATOR_SIZE], mirrored: &[i16; ACCUMULATOR_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
+fn clamp_scalar(acc: &[i32], hidden_inputs: &mut [i16; HIDDEN_INPUT_SIZE]) {
+    for i in 0..ACCUMULATOR_SIZE {
+        hidden_inputs[i] = acc[i].clamp(0, 127) as i16;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn clamp_avx2(acc: &[i32], hidden_inputs: &mut [i16; HIDDEN_INPUT_SIZE]) {
+    let zero = _mm256_setzero_si256();
+    let max_val = _mm256_set1_epi32(127);
+
+    for i in (0..ACCUMULATOR_SIZE).step_by(8) {
+        let a = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+        let clamped = _mm256_max_epi32(_mm256_min_epi32(a, max_val), zero);
+
+        let lo = _mm256_castsi256_si128(clamped);
+        let hi = _mm256_extracti128_si256(clamped, 1);
+        let packed = _mm_packs_epi32(lo, hi);
+        _mm_storeu_si128(hidden_inputs.as_mut_ptr().add(i) as *mut __m128i, packed);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn clamp_sse2(acc: &[i32], hidden_inputs: &mut [i16; HIDDEN_INPUT_SIZE]) {
+    let zero = _mm_setzero_si128();
+    let max_val = _mm_set1_epi32(127);
+
+    for i in (0..ACCUMULATOR_SIZE).step_by(8) {
+        let a0 = _mm_loadu_si128(acc.as_ptr().add(i) as *const __m128i);
+        let a1 = _mm_loadu_si128(acc.as_ptr().add(i + 4) as *const __m128i);
+
+        let clamped0 = _mm_max_epi32(_mm_min_epi32(a0, max_val), zero);
+        let clamped1 = _mm_max_epi32(_mm_min_epi32(a1, max_val), zero);
+
+        let packed = _mm_packs_epi32(clamped0, clamped1);
+        _mm_storeu_si128(hidden_inputs.as_mut_ptr().add(i) as *mut __m128i, packed);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn horizontal_sum_i32_sse2(v: __m128i) -> i64 {
+    let pairwise = _mm_add_epi32(v, _mm_unpackhi_epi64(v, v));
+    let pairwise = _mm_add_epi32(pairwise, _mm_shuffle_epi32(pairwise, 0x1B));
+    _mm_cvtsi128_si32(pairwise) as i64
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn horizontal_sum_i32_avx2(v: __m256i) -> i64 {
+    let lo = _mm256_castsi256_si128(v);
+    let hi = _mm256_extracti128_si256(v, 1);
+    horizontal_sum_i32_sse2(_mm_add_epi32(lo, hi))
+}
+
+#[inline]
+fn compute_hidden_layer_scalar(weights: &NnueWeights, hidden_inputs: &[i16; HIDDEN_INPUT_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
     const BIAS_SCALE: i64 = 127;
     const BIAS_OFFSET: i64 = 4064;
     const DIVISOR: i64 = 8128;
@@ -667,21 +707,9 @@ fn compute_hidden_layer_scalar(weights: &NnueWeights, activated: &[i16; ACCUMULA
     for neuron in 0..HIDDEN_SIZE {
         let w = weights.hidden_weights_for_neuron(neuron);
         let mut dot = 0i64;
-        
-        // Unroll inner loops for better branch prediction and compiler optimization
-        for i in (0..ACCUMULATOR_SIZE).step_by(4) {
-            dot += (activated[i] as i64) * (w[i] as i64);
-            dot += (activated[i + 1] as i64) * (w[i + 1] as i64);
-            dot += (activated[i + 2] as i64) * (w[i + 2] as i64);
-            dot += (activated[i + 3] as i64) * (w[i + 3] as i64);
-        }
-        
-        // Dot product with mirrored half
-        for i in (0..ACCUMULATOR_SIZE).step_by(4) {
-            dot += (mirrored[i] as i64) * (w[ACCUMULATOR_SIZE + i] as i64);
-            dot += (mirrored[i + 1] as i64) * (w[ACCUMULATOR_SIZE + i + 1] as i64);
-            dot += (mirrored[i + 2] as i64) * (w[ACCUMULATOR_SIZE + i + 2] as i64);
-            dot += (mirrored[i + 3] as i64) * (w[ACCUMULATOR_SIZE + i + 3] as i64);
+
+        for i in 0..HIDDEN_INPUT_SIZE {
+            dot += (hidden_inputs[i] as i64) * (w[i] as i64);
         }
         
         let bias = (weights.hidden_bias[neuron] as i64) * BIAS_SCALE + BIAS_OFFSET;
@@ -692,64 +720,21 @@ fn compute_hidden_layer_scalar(weights: &NnueWeights, activated: &[i16; ACCUMULA
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
-unsafe fn compute_hidden_layer_sse2(weights: &NnueWeights, activated: &[i16; ACCUMULATOR_SIZE], mirrored: &[i16; ACCUMULATOR_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
+unsafe fn compute_hidden_layer_sse2(weights: &NnueWeights, hidden_inputs: &[i16; HIDDEN_INPUT_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
     const BIAS_SCALE: i64 = 127;
     const BIAS_OFFSET: i64 = 4064;
     const DIVISOR: i64 = 8128;
     
     for neuron in 0..HIDDEN_SIZE {
         let w = weights.hidden_weights_for_neuron(neuron);
-        let mut sum1 = _mm_setzero_si128();
-        let mut sum2 = _mm_setzero_si128();
-        
-        // Process activated half with parallel accumulators
-        for i in (0..ACCUMULATOR_SIZE).step_by(16) {
-            let a1 = _mm_loadu_si128(activated.as_ptr().add(i) as *const __m128i);
-            let b1 = _mm_loadu_si128(w.as_ptr().add(i) as *const __m128i);
-            sum1 = _mm_add_epi32(sum1, _mm_madd_epi16(a1, b1));
-            
-            let a2 = _mm_loadu_si128(activated.as_ptr().add(i + 8) as *const __m128i);
-            let b2 = _mm_loadu_si128(w.as_ptr().add(i + 8) as *const __m128i);
-            sum2 = _mm_add_epi32(sum2, _mm_madd_epi16(a2, b2));
+        let mut sum = _mm_setzero_si128();
+
+        for i in (0..HIDDEN_INPUT_SIZE).step_by(8) {
+            let a = _mm_loadu_si128(hidden_inputs.as_ptr().add(i) as *const __m128i);
+            let b = _mm_loadu_si128(w.as_ptr().add(i) as *const __m128i);
+            sum = _mm_add_epi32(sum, _mm_madd_epi16(a, b));
         }
-        
-        let mut dot: i64 = {
-            let mut temp = [0i32; 4];
-            _mm_storeu_si128(temp.as_mut_ptr() as *mut __m128i, sum1);
-            temp.iter().map(|&x| x as i64).sum::<i64>()
-        };
-        
-        dot += {
-            let mut temp = [0i32; 4];
-            _mm_storeu_si128(temp.as_mut_ptr() as *mut __m128i, sum2);
-            temp.iter().map(|&x| x as i64).sum::<i64>()
-        };
-        
-        // Process mirrored half
-        let mut sum1 = _mm_setzero_si128();
-        let mut sum2 = _mm_setzero_si128();
-        
-        for i in (0..ACCUMULATOR_SIZE).step_by(16) {
-            let a1 = _mm_loadu_si128(mirrored.as_ptr().add(i) as *const __m128i);
-            let b1 = _mm_loadu_si128(w.as_ptr().add(ACCUMULATOR_SIZE + i) as *const __m128i);
-            sum1 = _mm_add_epi32(sum1, _mm_madd_epi16(a1, b1));
-            
-            let a2 = _mm_loadu_si128(mirrored.as_ptr().add(i + 8) as *const __m128i);
-            let b2 = _mm_loadu_si128(w.as_ptr().add(ACCUMULATOR_SIZE + i + 8) as *const __m128i);
-            sum2 = _mm_add_epi32(sum2, _mm_madd_epi16(a2, b2));
-        }
-        
-        dot += {
-            let mut temp = [0i32; 4];
-            _mm_storeu_si128(temp.as_mut_ptr() as *mut __m128i, sum1);
-            temp.iter().map(|&x| x as i64).sum::<i64>()
-        };
-        
-        dot += {
-            let mut temp = [0i32; 4];
-            _mm_storeu_si128(temp.as_mut_ptr() as *mut __m128i, sum2);
-            temp.iter().map(|&x| x as i64).sum::<i64>()
-        };
+        let dot = horizontal_sum_i32_sse2(sum);
         
         let bias = (weights.hidden_bias[neuron] as i64) * BIAS_SCALE + BIAS_OFFSET;
         let value = ((dot + bias) / DIVISOR) as i32;
@@ -759,64 +744,21 @@ unsafe fn compute_hidden_layer_sse2(weights: &NnueWeights, activated: &[i16; ACC
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn compute_hidden_layer_avx2(weights: &NnueWeights, activated: &[i16; ACCUMULATOR_SIZE], mirrored: &[i16; ACCUMULATOR_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
+unsafe fn compute_hidden_layer_avx2(weights: &NnueWeights, hidden_inputs: &[i16; HIDDEN_INPUT_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
     const BIAS_SCALE: i64 = 127;
     const BIAS_OFFSET: i64 = 4064;
     const DIVISOR: i64 = 8128;
-    
+
     for neuron in 0..HIDDEN_SIZE {
         let w = weights.hidden_weights_for_neuron(neuron);
-        let mut sum1 = _mm256_setzero_si256();
-        let mut sum2 = _mm256_setzero_si256();
-        
-        // Process activated half with parallel accumulators
-        for i in (0..ACCUMULATOR_SIZE).step_by(32) {
-            let a1 = _mm256_loadu_si256(activated.as_ptr().add(i) as *const __m256i);
-            let b1 = _mm256_loadu_si256(w.as_ptr().add(i) as *const __m256i);
-            sum1 = _mm256_add_epi32(sum1, _mm256_madd_epi16(a1, b1));
-            
-            let a2 = _mm256_loadu_si256(activated.as_ptr().add(i + 16) as *const __m256i);
-            let b2 = _mm256_loadu_si256(w.as_ptr().add(i + 16) as *const __m256i);
-            sum2 = _mm256_add_epi32(sum2, _mm256_madd_epi16(a2, b2));
+        let mut sum = _mm256_setzero_si256();
+
+        for i in (0..HIDDEN_INPUT_SIZE).step_by(16) {
+            let a = _mm256_loadu_si256(hidden_inputs.as_ptr().add(i) as *const __m256i);
+            let b = _mm256_loadu_si256(w.as_ptr().add(i) as *const __m256i);
+            sum = _mm256_add_epi32(sum, _mm256_madd_epi16(a, b));
         }
-        
-        let mut dot: i64 = {
-            let mut lanes = [0i32; 8];
-            _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, sum1);
-            lanes.iter().map(|&x| x as i64).sum::<i64>()
-        };
-        
-        dot += {
-            let mut lanes = [0i32; 8];
-            _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, sum2);
-            lanes.iter().map(|&x| x as i64).sum::<i64>()
-        };
-        
-        // Process mirrored half
-        let mut sum1 = _mm256_setzero_si256();
-        let mut sum2 = _mm256_setzero_si256();
-        
-        for i in (0..ACCUMULATOR_SIZE).step_by(32) {
-            let a1 = _mm256_loadu_si256(mirrored.as_ptr().add(i) as *const __m256i);
-            let b1 = _mm256_loadu_si256(w.as_ptr().add(ACCUMULATOR_SIZE + i) as *const __m256i);
-            sum1 = _mm256_add_epi32(sum1, _mm256_madd_epi16(a1, b1));
-            
-            let a2 = _mm256_loadu_si256(mirrored.as_ptr().add(i + 16) as *const __m256i);
-            let b2 = _mm256_loadu_si256(w.as_ptr().add(ACCUMULATOR_SIZE + i + 16) as *const __m256i);
-            sum2 = _mm256_add_epi32(sum2, _mm256_madd_epi16(a2, b2));
-        }
-        
-        dot += {
-            let mut lanes = [0i32; 8];
-            _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, sum1);
-            lanes.iter().map(|&x| x as i64).sum::<i64>()
-        };
-        
-        dot += {
-            let mut lanes = [0i32; 8];
-            _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, sum2);
-            lanes.iter().map(|&x| x as i64).sum::<i64>()
-        };
+        let dot = horizontal_sum_i32_avx2(sum);
         
         let bias = (weights.hidden_bias[neuron] as i64) * BIAS_SCALE + BIAS_OFFSET;
         let value = ((dot + bias) / DIVISOR) as i32;

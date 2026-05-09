@@ -38,9 +38,14 @@ pub fn run_bench_cli(args: Vec<String>) {
             let time_ms = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(2_000);
             run_compare_bench(depth, time_ms);
         }
+        "nnue_profile" => {
+            let iters = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100_000);
+            run_nnue_profile_bench(iters);
+        }
         _ => {
             eprintln!("usage:");
             eprintln!("  bench nnue [iterations]");
+            eprintln!("  bench nnue_profile [iterations]");
             eprintln!("  bench search [depth] [time_ms]");
             eprintln!("  bench compare [depth] [time_ms]");
         }
@@ -146,4 +151,59 @@ pub fn run_compare_bench(depth: u8, time_ms: u64) {
         nnue.nodes as f64 / nnue_elapsed.as_secs_f64().max(0.001),
         nnue_best.map(|m| m.to_uci_string()).unwrap_or_else(|| "0000".to_string())
     );
+}
+
+pub fn run_nnue_profile_bench(iterations: usize) {
+    let board = Board::new();
+    let mut nnue = NnueEvaluator::new(crate::nnue::DEFAULT_WEIGHTS_PATH);
+    nnue.reset(&board);
+
+    let warmup = 1_000.min(iterations.max(1));
+    for _ in 0..warmup {
+        let _ = nnue.evaluate(&board);
+    }
+
+    // Profile individual evaluations
+    let mut total_clamp_ns = 0u64;
+    let mut total_hidden_ns = 0u64;
+    let mut total_output_ns = 0u64;
+    let mut checksum = 0i64;
+    let start = std::time::Instant::now();
+
+    for _ in 0..iterations.max(1) {
+        let (score, clamp_ns, hidden_ns, output_ns) = nnue.profile_evaluate(&board);
+        total_clamp_ns += clamp_ns;
+        total_hidden_ns += hidden_ns;
+        total_output_ns += output_ns;
+        checksum += score as i64;
+    }
+
+    let elapsed = start.elapsed();
+    let per_eval = elapsed.as_secs_f64() * 1e9 / iterations.max(1) as f64;
+
+    println!("NNUE Detailed Profile");
+    println!("  build level: {} ({})", build_info::NNUE_LEVEL, build_info::MICROARCH);
+    println!("  backend: {:?}", nnue.backend);
+    println!("  iterations: {}", iterations.max(1));
+    println!("  total elapsed_ms: {:.3}", elapsed.as_secs_f64() * 1000.0);
+    println!("  ns_per_eval: {:.2}", per_eval);
+    println!("  evals_per_sec: {:.2}", 1e9 / per_eval.max(1.0));
+    println!("  checksum: {}", checksum);
+    println!("");
+    println!("Timing breakdown (average per eval):");
+    let total_timed = total_clamp_ns + total_hidden_ns + total_output_ns;
+    let iter = iterations.max(1) as f64;
+    println!("  clamp:     {:>8.2} ns ({:.1}%)", 
+        total_clamp_ns as f64 / iter,
+        100.0 * total_clamp_ns as f64 / total_timed as f64);
+    println!("  hidden:    {:>8.2} ns ({:.1}%)", 
+        total_hidden_ns as f64 / iter,
+        100.0 * total_hidden_ns as f64 / total_timed as f64);
+    println!("  output:    {:>8.2} ns ({:.1}%)", 
+        total_output_ns as f64 / iter,
+        100.0 * total_output_ns as f64 / total_timed as f64);
+    println!("  timed total:{:>8.2} ns", total_timed as f64 / iter);
+    println!("  overhead:  {:>8.2} ns ({:.1}%)", 
+        (per_eval - total_timed as f64 / iter).max(0.0),
+        100.0 * (per_eval - total_timed as f64 / iter).max(0.0) / per_eval);
 }

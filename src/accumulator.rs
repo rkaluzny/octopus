@@ -15,7 +15,7 @@
 
 use crate::board::{Board, Color, PieceType};
 use crate::features::{feature_index_table, ACCUMULATOR_SIZE};
-use crate::nnue::NnueWeights;
+use crate::nnue::{EvalBackend, NnueWeights};
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -67,7 +67,7 @@ impl Default for PieceDelta {
 }
 
 impl NnueState {
-    pub fn rebuild_from_board(&mut self, board: &Board, weights: &NnueWeights) {
+    pub fn rebuild_from_board(&mut self, board: &Board, weights: &NnueWeights, backend: EvalBackend) {
         self.white.fill(0);
         self.black.fill(0);
         self.white_king_sq = board.king_square(Color::White);
@@ -91,7 +91,7 @@ impl NnueState {
                 let mut pieces = board.bitboards[piece_idx] & board.color_bitboards[color_idx];
                 while pieces != 0 {
                     let square = pieces.trailing_zeros() as u8;
-                    self.apply_piece_delta(color, piece, square, 1, weights);
+                    self.apply_piece_delta(color, piece, square, 1, weights, backend);
                     pieces &= pieces - 1;
                 }
             }
@@ -106,9 +106,9 @@ impl NnueState {
     }
 
     #[inline(always)]
-    pub fn apply_piece_deltas(&mut self, deltas: &[PieceDelta], weights: &NnueWeights) {
+    pub fn apply_piece_deltas(&mut self, deltas: &[PieceDelta], weights: &NnueWeights, backend: EvalBackend) {
         for delta in deltas {
-            self.apply_piece_delta(delta.piece_color, delta.piece, delta.square, delta.sign, weights);
+            self.apply_piece_delta(delta.piece_color, delta.piece, delta.square, delta.sign, weights, backend);
         }
     }
 
@@ -120,13 +120,14 @@ impl NnueState {
         square: u8,
         sign: i32,
         weights: &NnueWeights,
+        backend: EvalBackend,
     ) {
         if piece == PieceType::King {
             return;
         }
         let delta = if sign >= 0 { 1 } else { -1 };
-        self.apply_piece_delta_for_side(Color::White, piece_color, piece, square, delta, weights);
-        self.apply_piece_delta_for_side(Color::Black, piece_color, piece, square, delta, weights);
+        self.apply_piece_delta_for_side(Color::White, piece_color, piece, square, delta, backend, weights);
+        self.apply_piece_delta_for_side(Color::Black, piece_color, piece, square, delta, backend, weights);
     }
 
     #[inline(always)]
@@ -137,13 +138,14 @@ impl NnueState {
         piece: PieceType,
         square: u8,
         delta: i32,
+        backend: EvalBackend,
         weights: &NnueWeights,
     ) {
         if piece == PieceType::King {
             return;
         }
         let king_sq = self.king_square(side) as usize;
-        self.apply_piece_delta_for_side_with_king_sq(side, king_sq as u8, piece_color, piece, square, delta, weights);
+        self.apply_piece_delta_for_side_with_king_sq(side, king_sq as u8, piece_color, piece, square, delta, backend, weights);
     }
 
     #[inline(always)]
@@ -155,6 +157,7 @@ impl NnueState {
         piece: PieceType,
         square: u8,
         delta: i32,
+        backend: EvalBackend,
         weights: &NnueWeights,
     ) {
         if piece == PieceType::King {
@@ -171,21 +174,23 @@ impl NnueState {
             Color::Black => &mut self.black,
         };
 
-        // Use SIMD if available on x86_64
-        #[cfg(target_arch = "x86_64")]
-        {
-            if is_x86_feature_detected!("avx2") {
+        // Dispatch based on pre-selected backend
+        match backend {
+            #[cfg(target_arch = "x86_64")]
+            EvalBackend::Avx2 => {
                 unsafe {
                     apply_piece_delta_avx2(acc, feature_weights, delta);
                 }
                 return;
             }
-            if is_x86_feature_detected!("sse2") {
+            #[cfg(target_arch = "x86_64")]
+            EvalBackend::Sse2 => {
                 unsafe {
                     apply_piece_delta_sse2(acc, feature_weights, delta);
                 }
                 return;
             }
+            _ => {}
         }
 
         // Fallback to scalar
