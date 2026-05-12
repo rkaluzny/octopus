@@ -281,10 +281,19 @@ impl NnueEvaluator {
             }
         }
 
-        eprintln!("NnueEvaluator: Failed to load weights, using zeroed weights");
+        eprintln!("NnueEvaluator: Failed to load weights, disabling NNUE");
+        self.weights = NnueWeights::zeroed();
+        self.weights_loaded = false;
+        self.initialized = false;
+        self.undo_stack.clear();
     }
 
     pub fn reset(&mut self, board: &Board) {
+        if !self.weights_loaded {
+            self.undo_stack.clear();
+            self.initialized = false;
+            return;
+        }
         self.state.rebuild_from_board(board, &self.weights, self.backend);
         self.undo_stack.clear();
         self.initialized = true;
@@ -295,7 +304,7 @@ impl NnueEvaluator {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.initialized
+        self.initialized && self.weights_loaded
     }
 
     fn update_state_for_move(&mut self, board: &Board, mv: &Move) {
@@ -398,67 +407,42 @@ impl NnueEvaluator {
             deltas,
             delta_len: len as u8,
         };
+        let table = crate::features::feature_index_table();
 
         if moving_piece == PieceType::King {
             undo.previous_state = Some(self.state.clone());
-            let mut temp = board.clone();
-            temp.apply_move(mv);
             if moving_color == Color::White {
-                self.state.white_king_sq = temp.king_square(Color::White);
+                self.state.white_king_sq = mv.to as u8;
                 self.state.black_king_sq = board.king_square(Color::Black);
-                self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend);
-                self.rebuild_side(&temp, Color::White);
+                self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
+                self.state.rebuild_side_after_king_move(
+                    board,
+                    Color::White,
+                    mv.to as u8,
+                    moving_color,
+                    mv,
+                    &self.weights,
+                    self.backend,
+                );
             } else {
                 self.state.white_king_sq = board.king_square(Color::White);
-                self.state.black_king_sq = temp.king_square(Color::Black);
-                self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend);
-                self.rebuild_side(&temp, Color::Black);
+                self.state.black_king_sq = mv.to as u8;
+                self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
+                self.state.rebuild_side_after_king_move(
+                    board,
+                    Color::Black,
+                    mv.to as u8,
+                    moving_color,
+                    mv,
+                    &self.weights,
+                    self.backend,
+                );
             }
         } else {
-            self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend);
+            self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
         }
 
         self.undo_stack.push(undo);
-    }
-
-    fn rebuild_side(&mut self, board: &Board, side: Color) {
-        let acc = match side {
-            Color::White => &mut self.state.white,
-            Color::Black => &mut self.state.black,
-        };
-        acc.fill(0);
-        let king_sq = self.state.king_square(side);
-        for piece_idx in 0..6 {
-            let piece = match piece_idx {
-                0 => PieceType::Pawn,
-                1 => PieceType::Knight,
-                2 => PieceType::Bishop,
-                3 => PieceType::Rook,
-                4 => PieceType::Queen,
-                _ => PieceType::King,
-            };
-            if piece == PieceType::King {
-                continue;
-            }
-            for color_idx in 0..2 {
-                let color = if color_idx == 0 { Color::White } else { Color::Black };
-                let mut pieces = board.bitboards[piece_idx] & board.color_bitboards[color_idx];
-                while pieces != 0 {
-                    let square = pieces.trailing_zeros() as u8;
-                    self.state.apply_piece_delta_for_side_with_king_sq(
-                        side,
-                        king_sq,
-                        color,
-                        piece,
-                        square,
-                        1,
-                        self.backend,
-                        &self.weights,
-                    );
-                    pieces &= pieces - 1;
-                }
-            }
-        }
     }
 
     pub fn apply_move(&mut self, board: &Board, mv: &Move) {
@@ -476,23 +460,25 @@ impl NnueEvaluator {
             if let Some(prev) = undo.previous_state {
                 self.state = prev;
             } else {
+                let table = crate::features::feature_index_table();
                 for i in (0..undo.delta_len as usize).rev() {
                     let delta = undo.deltas[i];
-                self.state.apply_piece_delta(
-                    delta.piece_color,
-                    delta.piece,
-                    delta.square,
-                    -delta.sign,
-                    &self.weights,
-                    self.backend,
-                );
+                    self.state.apply_piece_delta(
+                        delta.piece_color,
+                        delta.piece,
+                        delta.square,
+                        -delta.sign,
+                        &self.weights,
+                        self.backend,
+                        table,
+                    );
                 }
             }
         }
     }
 
     pub fn evaluate(&self, board: &Board) -> i32 {
-        if !self.initialized {
+        if !self.initialized || !self.weights_loaded {
             return 0;
         }
 
@@ -537,7 +523,7 @@ impl NnueEvaluator {
     /// Run a single evaluation with detailed timing breakdown for profiling.
     /// Returns (score, clamp_time_ns, hidden_time_ns, output_time_ns)
     pub fn profile_evaluate(&self, board: &Board) -> (i32, u64, u64, u64) {
-        if !self.initialized {
+        if !self.initialized || !self.weights_loaded {
             return (0, 0, 0, 0);
         }
 

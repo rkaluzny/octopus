@@ -14,8 +14,9 @@
 // NNUE accumulator state management with incremental updates.
 
 use crate::board::{Board, Color, PieceType};
-use crate::features::{feature_index_table, ACCUMULATOR_SIZE};
+use crate::features::{feature_index_table, FeatureIndexTable, ACCUMULATOR_SIZE};
 use crate::nnue::{EvalBackend, NnueWeights};
+use crate::movegen::{Move, MoveType};
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -72,6 +73,7 @@ impl NnueState {
         self.black.fill(0);
         self.white_king_sq = board.king_square(Color::White);
         self.black_king_sq = board.king_square(Color::Black);
+        let table = feature_index_table();
 
         for piece_idx in 0..6 {
             let piece = match piece_idx {
@@ -91,7 +93,7 @@ impl NnueState {
                 let mut pieces = board.bitboards[piece_idx] & board.color_bitboards[color_idx];
                 while pieces != 0 {
                     let square = pieces.trailing_zeros() as u8;
-                    self.apply_piece_delta(color, piece, square, 1, weights, backend);
+                    self.apply_piece_delta(color, piece, square, 1, weights, backend, table);
                     pieces &= pieces - 1;
                 }
             }
@@ -106,9 +108,15 @@ impl NnueState {
     }
 
     #[inline(always)]
-    pub fn apply_piece_deltas(&mut self, deltas: &[PieceDelta], weights: &NnueWeights, backend: EvalBackend) {
+    pub fn apply_piece_deltas(
+        &mut self,
+        deltas: &[PieceDelta],
+        weights: &NnueWeights,
+        backend: EvalBackend,
+        table: &FeatureIndexTable,
+    ) {
         for delta in deltas {
-            self.apply_piece_delta(delta.piece_color, delta.piece, delta.square, delta.sign, weights, backend);
+            self.apply_piece_delta(delta.piece_color, delta.piece, delta.square, delta.sign, weights, backend, table);
         }
     }
 
@@ -121,13 +129,14 @@ impl NnueState {
         sign: i32,
         weights: &NnueWeights,
         backend: EvalBackend,
+        table: &FeatureIndexTable,
     ) {
         if piece == PieceType::King {
             return;
         }
         let delta = if sign >= 0 { 1 } else { -1 };
-        self.apply_piece_delta_for_side(Color::White, piece_color, piece, square, delta, backend, weights);
-        self.apply_piece_delta_for_side(Color::Black, piece_color, piece, square, delta, backend, weights);
+        self.apply_piece_delta_for_side(Color::White, piece_color, piece, square, delta, backend, weights, table);
+        self.apply_piece_delta_for_side(Color::Black, piece_color, piece, square, delta, backend, weights, table);
     }
 
     #[inline(always)]
@@ -140,12 +149,23 @@ impl NnueState {
         delta: i32,
         backend: EvalBackend,
         weights: &NnueWeights,
+        table: &FeatureIndexTable,
     ) {
         if piece == PieceType::King {
             return;
         }
         let king_sq = self.king_square(side) as usize;
-        self.apply_piece_delta_for_side_with_king_sq(side, king_sq as u8, piece_color, piece, square, delta, backend, weights);
+        self.apply_piece_delta_for_side_with_king_sq(
+            side,
+            king_sq as u8,
+            piece_color,
+            piece,
+            square,
+            delta,
+            backend,
+            weights,
+            table,
+        );
     }
 
     #[inline(always)]
@@ -159,13 +179,13 @@ impl NnueState {
         delta: i32,
         backend: EvalBackend,
         weights: &NnueWeights,
+        table: &FeatureIndexTable,
     ) {
         if piece == PieceType::King {
             return;
         }
 
         let king_sq = king_sq as usize;
-        let table = feature_index_table();
         let feature = table[side as usize][king_sq][piece_color as usize][piece as usize]
             [square as usize] as usize;
         let feature_weights = weights.feature_weights_for_feature(feature);
@@ -214,6 +234,124 @@ impl NnueState {
         match side {
             Color::White => self.white_king_sq,
             Color::Black => self.black_king_sq,
+        }
+    }
+
+    #[inline(always)]
+    pub fn rebuild_side_after_king_move(
+        &mut self,
+        board: &Board,
+        side: Color,
+        king_sq: u8,
+        moving_color: Color,
+        mv: &Move,
+        weights: &NnueWeights,
+        backend: EvalBackend,
+    ) {
+        let table = feature_index_table();
+        let acc = match side {
+            Color::White => &mut self.white,
+            Color::Black => &mut self.black,
+        };
+        acc.fill(0);
+
+        for piece_idx in 0..6 {
+            let piece = match piece_idx {
+                0 => PieceType::Pawn,
+                1 => PieceType::Knight,
+                2 => PieceType::Bishop,
+                3 => PieceType::Rook,
+                4 => PieceType::Queen,
+                _ => PieceType::King,
+            };
+            if piece == PieceType::King {
+                continue;
+            }
+
+            for color_idx in 0..2 {
+                let piece_color = if color_idx == 0 { Color::White } else { Color::Black };
+                let mut pieces = board.bitboards[piece_idx] & board.color_bitboards[color_idx];
+                while pieces != 0 {
+                    let square = pieces.trailing_zeros() as u8;
+                    if mv.capture.is_some() && piece_color != moving_color && square == mv.to as u8 {
+                        pieces &= pieces - 1;
+                        continue;
+                    }
+                    if piece == PieceType::Rook && piece_color == moving_color {
+                        match mv.move_type {
+                            MoveType::KingCastle if square == 63 && moving_color == Color::White => {
+                                pieces &= pieces - 1;
+                                continue;
+                            }
+                            MoveType::KingCastle if square == 7 && moving_color == Color::Black => {
+                                pieces &= pieces - 1;
+                                continue;
+                            }
+                            MoveType::QueenCastle if square == 56 && moving_color == Color::White => {
+                                pieces &= pieces - 1;
+                                continue;
+                            }
+                            MoveType::QueenCastle if square == 0 && moving_color == Color::Black => {
+                                pieces &= pieces - 1;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.apply_piece_delta_for_side_with_king_sq(
+                        side,
+                        king_sq,
+                        piece_color,
+                        piece,
+                        square,
+                        1,
+                        backend,
+                        weights,
+                        table,
+                    );
+                    pieces &= pieces - 1;
+                }
+            }
+        }
+
+        match mv.move_type {
+            MoveType::KingCastle => {
+                let (rook_to, rook_color) = if moving_color == Color::White {
+                    (61u8, Color::White)
+                } else {
+                    (5u8, Color::Black)
+                };
+                self.apply_piece_delta_for_side_with_king_sq(
+                    side,
+                    king_sq,
+                    rook_color,
+                    PieceType::Rook,
+                    rook_to,
+                    1,
+                    backend,
+                    weights,
+                    table,
+                );
+            }
+            MoveType::QueenCastle => {
+                let (rook_to, rook_color) = if moving_color == Color::White {
+                    (59u8, Color::White)
+                } else {
+                    (3u8, Color::Black)
+                };
+                self.apply_piece_delta_for_side_with_king_sq(
+                    side,
+                    king_sq,
+                    rook_color,
+                    PieceType::Rook,
+                    rook_to,
+                    1,
+                    backend,
+                    weights,
+                    table,
+                );
+            }
+            _ => {}
         }
     }
 }

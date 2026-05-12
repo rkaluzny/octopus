@@ -13,6 +13,7 @@
 
 use crate::attacks;
 use crate::board::{Board, Color, PieceType, Bitboard};
+use std::sync::OnceLock;
 
 // A Score struct holds Middlegame and Endgame values respectively.
 #[derive(Copy, Clone, Default, Debug)]
@@ -148,6 +149,13 @@ const KING_PST_MG: [Score; 64] = [
     m(-12, 12), m(-6, 20), m(-14, 28), m(-18, 36), m(-18, 36), m(-14, 28), m(-6, 20), m(-12, 12),
 ];
 
+struct PassedPawnMasks {
+    white: [Bitboard; 64],
+    black: [Bitboard; 64],
+}
+
+static PASSED_PAWN_MASKS: OnceLock<PassedPawnMasks> = OnceLock::new();
+
 
 // --- EVALUATION FUNCTION ---
 
@@ -214,7 +222,7 @@ pub fn evaluate(board: &Board) -> i32 {
     // Opening phase development bonuses
     // =============================================================
     let total_phase = TOTAL_PHASE;
-    let opening_factor = (total_phase - phase.min(total_phase)) as f32 / total_phase as f32;
+    let opening_factor = phase.min(total_phase) as f32 / total_phase as f32;
 
     // Knight and bishop development bonus
     let white_minor = (board.bitboards[PieceType::Knight as usize] | board.bitboards[PieceType::Bishop as usize]) & white_pieces;
@@ -241,8 +249,14 @@ pub fn evaluate(board: &Board) -> i32 {
     // Queen early move penalty (small penalty to discourage premature queen moves)
     let white_queen_on_start = (board.bitboards[PieceType::Queen as usize] & white_pieces & (1u64 << 3)) != 0;
     let black_queen_on_start = (board.bitboards[PieceType::Queen as usize] & black_pieces & (1u64 << 59)) != 0;
-    let queen_penalty = if !white_queen_on_start && (board.bitboards[PieceType::Queen as usize] & white_pieces) != 0 { -15 } else { 0 };
-    let queen_penalty_black = if !black_queen_on_start && (board.bitboards[PieceType::Queen as usize] & black_pieces) != 0 { 15 } else { 0 };
+    let queen_penalty = if !white_queen_on_start && (board.bitboards[PieceType::Queen as usize] & white_pieces) != 0 { -30 } else { 0 };
+    let queen_penalty_black = if !black_queen_on_start && (board.bitboards[PieceType::Queen as usize] & black_pieces) != 0 { 30 } else { 0 };
+
+    // Extra penalty if queen moved before all knights and bishops have moved
+    let white_minors_starting = (board.bitboards[PieceType::Knight as usize] | board.bitboards[PieceType::Bishop as usize]) & white_pieces & ((1u64 << 1) | (1u64 << 2) | (1u64 << 5) | (1u64 << 6));
+    let black_minors_starting = (board.bitboards[PieceType::Knight as usize] | board.bitboards[PieceType::Bishop as usize]) & black_pieces & ((1u64 << 57) | (1u64 << 58) | (1u64 << 61) | (1u64 << 62));
+    let white_queen_extra = if !white_queen_on_start && (board.bitboards[PieceType::Queen as usize] & white_pieces) != 0 && white_minors_starting != 0 { -25 } else { 0 };
+    let black_queen_extra = if !black_queen_on_start && (board.bitboards[PieceType::Queen as usize] & black_pieces) != 0 && black_minors_starting != 0 { 25 } else { 0 };
 
     // Center occupation bonus (pawns prioritized)
     let center_squares = [27u8, 28, 35, 36]; // d4, e4, d5, e5
@@ -252,16 +266,16 @@ pub fn evaluate(board: &Board) -> i32 {
         let bb = 1u64 << sq;
         if (bb & white_pieces) != 0 {
             if (bb & board.bitboards[PieceType::Pawn as usize]) != 0 {
-                white_center += 15; // Pawn on center = higher bonus
+                white_center += 20; // Pawn on center = higher bonus
             } else {
-                white_center += 8; // Other pieces on center
+                white_center += 10; // Other pieces on center
             }
         }
         if (bb & black_pieces) != 0 {
             if (bb & board.bitboards[PieceType::Pawn as usize]) != 0 {
-                black_center += 15;
+                black_center += 20;
             } else {
-                black_center += 8;
+                black_center += 10;
             }
         }
     }
@@ -274,10 +288,10 @@ pub fn evaluate(board: &Board) -> i32 {
     let black_space = (black_pieces & black_enemy_territory).count_ones() as i32;
     let white_pawns_space = (board.bitboards[PieceType::Pawn as usize] & white_pieces & white_enemy_territory).count_ones() as i32;
     let black_pawns_space = (board.bitboards[PieceType::Pawn as usize] & black_pieces & black_enemy_territory).count_ones() as i32;
-    let space_bonus = (white_space + white_pawns_space * 2 - black_space - black_pawns_space * 2) * 3;
+    let space_bonus = (white_space + white_pawns_space * 2 - black_space - black_pawns_space * 2) * 2;
 
     // Combine and scale by opening factor (fade in endgame)
-    let dev_bonus = (white_dev - black_dev) + queen_penalty + queen_penalty_black + center_bonus + space_bonus;
+    let dev_bonus = (white_dev - black_dev) + queen_penalty + white_queen_extra + queen_penalty_black + black_queen_extra + center_bonus + space_bonus;
     let dev_bonus_scaled = (dev_bonus as f32 * opening_factor) as i32;
     score += m(dev_bonus_scaled, 0);
 
@@ -311,8 +325,8 @@ pub fn evaluate(board: &Board) -> i32 {
     let white_bishops = (board.bitboards[PieceType::Bishop as usize] & white_pieces).count_ones();
     let black_bishops = (board.bitboards[PieceType::Bishop as usize] & black_pieces).count_ones();
     
-    if white_bishops >= 2 { score += m(20, 40); }
-    if black_bishops >= 2 { score -= m(20, 40); }
+    if white_bishops >= 2 { score += m(30, 60); }
+    if black_bishops >= 2 { score -= m(30, 60); }
     
     // 6. Tempo Bonus (~10 cp in midgame, fades in endgame)
     let tempo_bonus = (10 * (total_phase - phase)) / total_phase;
@@ -343,28 +357,81 @@ fn get_pst(piece: PieceType, sq: usize) -> Score {
     }
 }
 
+fn pawn_attacks(pawns: Bitboard, color: Color) -> Bitboard {
+    const FILE_A: Bitboard = 0x0101_0101_0101_0101;
+    const FILE_H: Bitboard = 0x8080_8080_8080_8080;
+
+    match color {
+        Color::White => ((pawns & !FILE_A) << 7) | ((pawns & !FILE_H) << 9),
+        Color::Black => ((pawns & !FILE_H) >> 7) | ((pawns & !FILE_A) >> 9),
+    }
+}
+
+fn passed_pawn_masks() -> &'static PassedPawnMasks {
+    PASSED_PAWN_MASKS.get_or_init(|| {
+        let mut masks = PassedPawnMasks {
+            white: [0; 64],
+            black: [0; 64],
+        };
+
+        for sq in 0..64 {
+            let file = sq % 8;
+            let rank = sq / 8;
+
+            let mut white_mask = 0u64;
+            for r in (rank + 1)..8 {
+                for df in -1i32..=1 {
+                    let nf = file as i32 + df;
+                    if (0..8).contains(&nf) {
+                        white_mask |= 1u64 << (r * 8 + nf as usize);
+                    }
+                }
+            }
+            masks.white[sq] = white_mask;
+
+            let mut black_mask = 0u64;
+            let mut r = rank as i32 - 1;
+            while r >= 0 {
+                for df in -1i32..=1 {
+                    let nf = file as i32 + df;
+                    if (0..8).contains(&nf) {
+                        black_mask |= 1u64 << ((r as usize) * 8 + nf as usize);
+                    }
+                }
+                r -= 1;
+            }
+            masks.black[sq] = black_mask;
+        }
+
+        masks
+    })
+}
+
 fn evaluate_pawns(board: &Board, color: Color) -> Score {
     let pawns = board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color as usize];
     let mut pawn_score = m(0, 0);
     
     // Isolated Pawns
-    // A pawn is isolated if there are no friendly pawns on adjacent files
-    // Shift west and east to find supported squares
     let west_pawns = (pawns >> 1) & 0xFEFEFEFEFEFEFEFE; 
     let east_pawns = (pawns << 1) & 0x7F7F7F7F7F7F7F7F; 
     
     let supported_pawns = west_pawns | east_pawns;
     let isolated_pawns = pawns & !supported_pawns;
     
-    pawn_score -= m(12, 18) * isolated_pawns.count_ones() as i32;
+    pawn_score -= m(15, 25) * isolated_pawns.count_ones() as i32;
     
     // Doubled Pawns
+    let enemy_pawns = board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color.opponent() as usize];
     for file in 0..8 {
         let file_mask = 0x0101010101010101u64 << file;
         let file_pawns = pawns & file_mask;
         let count = file_pawns.count_ones();
         if count > 1 {
-            pawn_score -= m(10, 15) * (count - 1) as i32;
+            pawn_score -= m(15, 20) * (count - 1) as i32;
+            // Extra penalty if enemy pawns are on the same file
+            if (enemy_pawns & file_mask) != 0 {
+                pawn_score -= m(10, 10) * (count - 1) as i32;
+            }
         }
     }
     
@@ -373,174 +440,180 @@ fn evaluate_pawns(board: &Board, color: Color) -> Score {
 
 fn is_pawn_passed(board: &Board, pawn_sq: u8, color: Color) -> bool {
     let enemy_pawns = board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color.opponent() as usize];
-    let file = pawn_sq % 8;
-
-    // Create a mask for the files in front of the pawn
-    let mut forward_files_mask = 0u64;
-    let mut current_rank_mask = 0xFFu64 << (pawn_sq & 56); // Mask for the current rank
-
-    if color == Color::White {
-        // Shift up to get all ranks in front
-        forward_files_mask = (!0u64).checked_shl(((pawn_sq & 56) + 8) as u32).unwrap_or(0);
-    } else {
-        // Shift down to get all ranks in front
-        forward_files_mask = (!0u64).checked_shr((64 - (pawn_sq & 56)) as u32).unwrap_or(0);
-    }
-    
-    // Create a mask for adjacent files
-    let mut adjacent_files_mask = 0u64;
-    if file > 0 { adjacent_files_mask |= 0x0101010101010101u64 << (file - 1); }
-    adjacent_files_mask |= 0x0101010101010101u64 << file;
-    if file < 7 { adjacent_files_mask |= 0x0101010101010101u64 << (file + 1); }
-
-    // Check for enemy pawns in the relevant area
-    (enemy_pawns & forward_files_mask & adjacent_files_mask) == 0
+    let masks = passed_pawn_masks();
+    let passed_mask = match color {
+        Color::White => masks.white[pawn_sq as usize],
+        Color::Black => masks.black[pawn_sq as usize],
+    };
+    (enemy_pawns & passed_mask) == 0
 }
 
 fn evaluate_passed_pawns(board: &Board, color: Color) -> Score {
     let pawns = board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color as usize];
     let mut passed_score = m(0, 0);
-    
+    let our_king = board.bitboards[PieceType::King as usize] & board.color_bitboards[color as usize];
+    let king_sq = if our_king != 0 { our_king.trailing_zeros() as u8 } else { 0 };
+    let enemy_king = board.bitboards[PieceType::King as usize] & board.color_bitboards[color.opponent() as usize];
+    let enemy_king_sq = if enemy_king != 0 { enemy_king.trailing_zeros() as u8 } else { 255 };
+
+    // First pass: build passed pawn bitboard
+    let mut passed_bb = 0u64;
     let mut bb = pawns;
     while bb != 0 {
         let sq = bb.trailing_zeros() as u8;
         if is_pawn_passed(board, sq, color) {
-            let rank = sq / 8;
-            let rank_from_promotion = if color == Color::White {
-                7 - rank
-            } else {
-                rank
-            };
-            
-            // Passed pawn bonus increases with proximity to promotion
-            let bonus = match rank_from_promotion {
-                0 => m(40, 120),  // On 7th/2nd rank
-                1 => m(25, 80),   // On 6th/3rd rank
-                2 => m(15, 50),   // On 5th/4th rank
-                3 => m(8, 30),
-                4 => m(4, 15),
-                _ => m(1, 5),
-            };
-            
-            passed_score += bonus;
-            
-            // Check if king is nearby to support the passed pawn (bonus for protection)
-            let our_king = board.bitboards[PieceType::King as usize] & board.color_bitboards[color as usize];
-            if our_king != 0 {
-                let king_sq = our_king.trailing_zeros() as u8;
-                let king_dist = ((king_sq % 8) as i32 - (sq % 8) as i32).abs() 
-                              + ((king_sq / 8) as i32 - (sq / 8) as i32).abs();
-                if king_dist <= 3 {
-                    passed_score += m(5, 10);
-                }
-            }
+            passed_bb |= 1u64 << sq;
         }
         bb &= bb - 1;
     }
-    
+
+    // Second pass: evaluate each passed pawn
+    bb = passed_bb;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        let rank = sq / 8;
+        let rank_from_promotion = if color == Color::White {
+            7 - rank
+        } else {
+            rank
+        };
+
+        let bonus = match rank_from_promotion {
+            0 => m(50, 140),
+            1 => m(30, 90),
+            2 => m(20, 60),
+            3 => m(10, 35),
+            4 => m(5, 15),
+            _ => m(0, 5),
+        };
+
+        passed_score += bonus;
+
+        // Own king proximity bonus for support
+        let king_dist = ((king_sq % 8) as i32 - (sq % 8) as i32).abs()
+                      + ((king_sq / 8) as i32 - (sq / 8) as i32).abs();
+        if king_dist <= 3 {
+            passed_score += m(5, 10);
+        }
+
+        // Enemy king far away bonus (endgames)
+        if enemy_king_sq != 255 {
+            let enemy_king_dist = ((enemy_king_sq % 8) as i32 - (sq % 8) as i32).abs()
+                                + ((enemy_king_sq / 8) as i32 - (sq / 8) as i32).abs();
+            if enemy_king_dist > 3 {
+                passed_score += m(10, 30);
+            }
+        }
+
+        bb &= bb - 1;
+    }
+
+    // Connected passers bonus
+    bb = passed_bb;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        let file = sq % 8;
+        let adjacent = 0u64
+            | if file > 0 { passed_bb & (0x0101010101010101u64 << (file - 1)) } else { 0 }
+            | if file < 7 { passed_bb & (0x0101010101010101u64 << (file + 1)) } else { 0 };
+        if adjacent != 0 {
+            passed_score += m(10, 20);
+        }
+        bb &= bb - 1;
+    }
+
     passed_score
 }
 
-fn evaluate_king_safety_enhanced(board: &Board, color: Color, _phase: i32, _total_phase: i32) -> Score {
+fn evaluate_king_safety_enhanced(board: &Board, color: Color, phase: i32, total_phase: i32) -> Score {
     let king_bb = board.bitboards[PieceType::King as usize] 
                 & board.color_bitboards[color as usize];
     if king_bb == 0 { return m(0,0); }
-    
+
     let king_idx = king_bb.trailing_zeros() as u8;
     let enemy_color = color.opponent();
     let enemy_pieces = board.color_bitboards[enemy_color as usize];
-    
-    let mut safety_score = m(0, 0);
-    
-    // 1. Count Enemy Attackers and their weights
-    let king_ring = attacks::get_king_attacks(king_idx);
-    let mut _attacker_count = 0;
-    let mut danger_score = 0;
-    
-    // Queen attacks: weight 3
-    if (board.bitboards[PieceType::Queen as usize] & enemy_pieces & king_ring) != 0 {
-        _attacker_count += 1;
-        danger_score += 30;
+
+    let opening_factor = (total_phase - phase.min(total_phase)) as f32 / total_phase as f32;
+    if opening_factor <= 0.0 { return m(0, 0); }
+
+    let mut danger = 0;
+
+    // King ring (king + adjacent squares)
+    let king_ring = attacks::get_king_attacks(king_idx) | (1u64 << king_idx);
+
+    // Extended zone: ring + squares one step further
+    let mut extended_zone = king_ring;
+    let mut ring_bb = king_ring;
+    while ring_bb != 0 {
+        let sq = ring_bb.trailing_zeros() as u8;
+        extended_zone |= attacks::get_king_attacks(sq);
+        ring_bb &= ring_bb - 1;
     }
-    
-    // Rook attacks: weight 3
-    let rook_attackers = (board.bitboards[PieceType::Rook as usize] & enemy_pieces & king_ring).count_ones();
-    _attacker_count += rook_attackers;
-    danger_score += rook_attackers as i32 * 30;
-    
-    // Bishop and Knight attacks: weight 2
-    let minor_attackers = ((board.bitboards[PieceType::Bishop as usize] 
-                          | board.bitboards[PieceType::Knight as usize]) & enemy_pieces & king_ring).count_ones();
-    _attacker_count += minor_attackers;
-    danger_score += minor_attackers as i32 * 20;
-    
-    safety_score -= m(danger_score, 0);
-    
-    // 2. Pawn Shield (stronger endgame bonus)
-    let pawns = board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color as usize];
-    
-    let mut shield_count = 0;
-    if color == Color::White {
-        if king_idx < 56 { 
-            let front_sq = king_idx + 8;
-            if (pawns >> front_sq) & 1 != 0 { shield_count += 1; }
-            if king_idx % 8 > 0 && (pawns >> (front_sq - 1)) & 1 != 0 { shield_count += 1; }
-            if king_idx % 8 < 7 && (pawns >> (front_sq + 1)) & 1 != 0 { shield_count += 1; }
-        }
-    } else {
-        if king_idx > 7 { 
-            let front_sq = king_idx - 8;
-            if (pawns >> front_sq) & 1 != 0 { shield_count += 1; }
-            if king_idx % 8 > 0 && (pawns >> (front_sq - 1)) & 1 != 0 { shield_count += 1; }
-            if king_idx % 8 < 7 && (pawns >> (front_sq + 1)) & 1 != 0 { shield_count += 1; }
-        }
-    }
-    
-    if shield_count < 2 {
-        safety_score -= m(20, 10);  // More penalty in midgame, less in endgame
-    }
-    
-    // 3. Open files near king penalty
+
+    // 1. Weighted attackers in extended king zone
+    let queens = board.bitboards[PieceType::Queen as usize] & enemy_pieces & extended_zone;
+    danger += queens.count_ones() as i32 * 40;
+
+    let rooks = board.bitboards[PieceType::Rook as usize] & enemy_pieces & extended_zone;
+    danger += rooks.count_ones() as i32 * 25;
+
+    let minors = (board.bitboards[PieceType::Bishop as usize] | board.bitboards[PieceType::Knight as usize])
+                & enemy_pieces & extended_zone;
+    danger += minors.count_ones() as i32 * 15;
+
+    // 2. Semi-open files near king with enemy heavy pieces
     let king_file = king_idx % 8;
-    let enemy_pawns = board.bitboards[PieceType::Pawn as usize] & enemy_pieces;
+    let enemy_rooks_queens = (board.bitboards[PieceType::Rook as usize] | board.bitboards[PieceType::Queen as usize]) & enemy_pieces;
     let friendly_pawns = board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color as usize];
-    
-    let mut open_files = 0;
+
     for file_offset in -1..=1i32 {
         let file = (king_file as i32 + file_offset) as u8;
         if file < 8 {
             let file_mask = 0x0101010101010101u64 << file;
-            let has_friendly = (friendly_pawns & file_mask) != 0;
-            let has_enemy = (enemy_pawns & file_mask) != 0;
-            if !has_friendly && has_enemy {
-                open_files += 1;
+            if (friendly_pawns & file_mask) == 0 && (enemy_rooks_queens & file_mask) != 0 {
+                danger += 15;
             }
         }
     }
-    
-    if open_files > 0 {
-        safety_score -= m(open_files as i32 * 10, 0);
+
+    // 3. Pawn shield quality
+    let pawns = board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color as usize];
+    let mut shield_count = 0;
+    if color == Color::White && king_idx < 56 {
+        let front_sq = king_idx + 8;
+        if (pawns >> front_sq) & 1 != 0 { shield_count += 1; }
+        if king_idx % 8 > 0 && (pawns >> (front_sq - 1)) & 1 != 0 { shield_count += 1; }
+        if king_idx % 8 < 7 && (pawns >> (front_sq + 1)) & 1 != 0 { shield_count += 1; }
+    } else if color == Color::Black && king_idx > 7 {
+        let front_sq = king_idx - 8;
+        if (pawns >> front_sq) & 1 != 0 { shield_count += 1; }
+        if king_idx % 8 > 0 && (pawns >> (front_sq - 1)) & 1 != 0 { shield_count += 1; }
+        if king_idx % 8 < 7 && (pawns >> (front_sq + 1)) & 1 != 0 { shield_count += 1; }
     }
-    
-    safety_score
+
+    danger += match shield_count {
+        3 => 0,
+        2 => 15,
+        1 => 40,
+        _ => 60,
+    };
+
+    danger = (danger as f32 * opening_factor) as i32;
+
+    Score(-danger, 0)
 }
 
-fn evaluate_mobility(board: &Board, color: Color, all_pieces: Bitboard, phase: i32, total_phase: i32) -> Score {
+fn evaluate_mobility(board: &Board, color: Color, all_pieces: Bitboard, _phase: i32, _total_phase: i32) -> Score {
     let our_pieces = board.color_bitboards[color as usize];
     let enemy_pawns = board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color.opponent() as usize];
     let mut mobility_score = m(0, 0);
     
     // Compute enemy pawn attack map (squares where our pieces can't safely move)
-    let mut pawn_attacks = 0u64;
-    let mut enemy_pawn_bb = enemy_pawns;
-    while enemy_pawn_bb != 0 {
-        let sq = enemy_pawn_bb.trailing_zeros() as u8;
-        pawn_attacks |= attacks::get_pawn_attacks(sq, color.opponent());
-        enemy_pawn_bb &= enemy_pawn_bb - 1;
-    }
+    let pawn_attacks = pawn_attacks(enemy_pawns, color.opponent());
     
     // Knight Mobility - decreases in value towards endgame
-    let knight_weight = if phase > total_phase / 2 { m(3, 1) } else { m(2, 2) };
+    let knight_weight = m(4, 4);
     let knights = board.bitboards[PieceType::Knight as usize] & our_pieces;
     let mut bb = knights;
     while bb != 0 {
@@ -551,7 +624,7 @@ fn evaluate_mobility(board: &Board, color: Color, all_pieces: Bitboard, phase: i
     }
     
     // Bishop Mobility - increases in value towards endgame  
-    let bishop_weight = if phase > total_phase / 2 { m(2, 3) } else { m(2, 2) };
+    let bishop_weight  = m(4, 4);
     let bishops = board.bitboards[PieceType::Bishop as usize] & our_pieces;
     let mut bb = bishops;
     while bb != 0 {
@@ -562,7 +635,7 @@ fn evaluate_mobility(board: &Board, color: Color, all_pieces: Bitboard, phase: i
     }
     
     // Rook Mobility
-    let rook_weight = if phase > total_phase / 2 { m(2, 3) } else { m(1, 3) };
+    let rook_weight   = m(3, 4);
     let rooks = board.bitboards[PieceType::Rook as usize] & our_pieces;
     let mut bb = rooks;
     while bb != 0 {
@@ -573,7 +646,7 @@ fn evaluate_mobility(board: &Board, color: Color, all_pieces: Bitboard, phase: i
     }
     
     // Queen Mobility
-    let queen_weight = m(1, 2);
+    let queen_weight  = m(1, 2);
     let queens = board.bitboards[PieceType::Queen as usize] & our_pieces;
     let mut bb = queens;
     while bb != 0 {
@@ -593,13 +666,7 @@ fn evaluate_outposts_and_minors(board: &Board, color: Color, _all_pieces: Bitboa
     let mut outpost_score = m(0, 0);
     
     // Compute squares not attacked by enemy pawns
-    let mut pawn_safe_squares = !0u64;
-    let mut enemy_pawn_bb = enemy_pawns;
-    while enemy_pawn_bb != 0 {
-        let sq = enemy_pawn_bb.trailing_zeros() as u8;
-        pawn_safe_squares &= !attacks::get_pawn_attacks(sq, color.opponent());
-        enemy_pawn_bb &= enemy_pawn_bb - 1;
-    }
+    let pawn_safe_squares = !pawn_attacks(enemy_pawns, color.opponent());
     
     let _enemy_back_rank = if color == Color::White { 0x00000000000000FFu64 } else { 0xFF00000000000000u64 };
     let in_enemy_half = if color == Color::White { 0xFFFFFFFF00000000u64 } else { 0x00000000FFFFFFFFu64 };
@@ -616,7 +683,7 @@ fn evaluate_outposts_and_minors(board: &Board, color: Color, _all_pieces: Bitboa
                                & board.bitboards[PieceType::Pawn as usize]
                                & our_pieces) != 0;
             if is_protected || (sq_bb & attacks::get_king_attacks(board.bitboards[PieceType::King as usize].trailing_zeros() as u8)) != 0 {
-                outpost_score += m(15, 10);
+                outpost_score += m(20, 15);
             }
         }
         bb &= bb - 1;
@@ -633,7 +700,7 @@ fn evaluate_outposts_and_minors(board: &Board, color: Color, _all_pieces: Bitboa
                                & board.bitboards[PieceType::Pawn as usize]
                                & our_pieces) != 0;
             if is_protected {
-                outpost_score += m(10, 8);
+                outpost_score += m(15, 13);
             }
         }
         bb &= bb - 1;
@@ -651,11 +718,19 @@ fn evaluate_outposts_and_minors(board: &Board, color: Color, _all_pieces: Bitboa
         let has_enemy = (board.bitboards[PieceType::Pawn as usize] & board.color_bitboards[color.opponent() as usize] & file_mask) != 0;
         
         if !has_friendly && !has_enemy {
-            // Fully open file
             outpost_score += m(10, 15);
         } else if !has_friendly && has_enemy {
-            // Semi-open file (enemy pawn present)
             outpost_score += m(5, 8);
+        }
+
+        // Rook on 7th rank bonus (enemy's second rank)
+        let rook_on_7th = if color == Color::White {
+            0x00FF000000000000u64
+        } else {
+            0x000000000000FF00u64
+        };
+        if ((1u64 << sq) & rook_on_7th) != 0 && !has_friendly {
+            outpost_score += m(15, 25);
         }
         
         bb &= bb - 1;
@@ -674,23 +749,28 @@ fn evaluate_trapped_bishops(board: &Board, color: Color) -> Score {
     while bb != 0 {
         let sq = bb.trailing_zeros() as u8;
         
-        // Check for trapped bishop pattern
-        // Light-squared bishop on a2/a7 blocked by own pawn on b3/b6/c2/c5
-        // Dark-squared bishop on h2/h7 blocked by own pawn on g3/g6/f2/f5
         let is_trapped = if color == Color::White {
-            // White bishop on a2 (16) blocked by pawn on b3 (17)
+            // a2 (16) blocked by pawn on b3 (17)
             (sq == 16 && (pawns & (1u64 << 17)) != 0) ||
-            // White bishop on h2 (23) blocked by pawn on g3 (22)
-            (sq == 23 && (pawns & (1u64 << 22)) != 0)
+            // h2 (23) blocked by pawn on g3 (22)
+            (sq == 23 && (pawns & (1u64 << 22)) != 0) ||
+            // b2 (17) blocked by pawns on a3 (24) and c3 (26)
+            (sq == 17 && (pawns & (1u64 << 24)) != 0 && (pawns & (1u64 << 26)) != 0) ||
+            // g2 (22) blocked by pawns on f3 (21) and h3 (23)
+            (sq == 22 && (pawns & (1u64 << 21)) != 0 && (pawns & (1u64 << 23)) != 0)
         } else {
-            // Black bishop on a7 (48) blocked by pawn on b6 (41)
+            // a7 (48) blocked by pawn on b6 (41)
             (sq == 48 && (pawns & (1u64 << 41)) != 0) ||
-            // Black bishop on h7 (55) blocked by pawn on g6 (46)
-            (sq == 55 && (pawns & (1u64 << 46)) != 0)
+            // h7 (55) blocked by pawn on g6 (46)
+            (sq == 55 && (pawns & (1u64 << 46)) != 0) ||
+            // b7 (49) blocked by pawns on a6 (40) and c6 (42)
+            (sq == 49 && (pawns & (1u64 << 40)) != 0 && (pawns & (1u64 << 42)) != 0) ||
+            // g7 (54) blocked by pawns on f6 (45) and h6 (47)
+            (sq == 54 && (pawns & (1u64 << 45)) != 0 && (pawns & (1u64 << 47)) != 0)
         };
         
         if is_trapped {
-            trapped_score -= m(20, 10);
+            trapped_score -= m(30, 15);
         }
         
         bb &= bb - 1;
@@ -698,6 +778,3 @@ fn evaluate_trapped_bishops(board: &Board, color: Color) -> Score {
     
     trapped_score
 }
-
-
-

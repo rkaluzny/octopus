@@ -238,14 +238,14 @@ impl Searcher {
         match self.eval_mode {
             EvalMode::Hce => evaluation::evaluate(board),
             EvalMode::Nnue => {
-                if self.nnue.is_ready() {
+                if self.nnue_active {
                     self.nnue.evaluate(board)
                 } else {
                     evaluation::evaluate(board)
                 }
             }
             EvalMode::Hybrid => {
-                if self.nnue.is_ready() {
+                if self.nnue_active {
                     let hce = evaluation::evaluate(board);
                     let nnue = self.nnue.evaluate(board);
                     (nnue * 7 + hce * 3) / 10
@@ -781,7 +781,7 @@ impl Searcher {
         self.start_time = Instant::now();
         self.seldepth = 0;
         self.max_seldepth = 0;
-        self.nnue_active = matches!(self.eval_mode, EvalMode::Nnue | EvalMode::Hybrid);
+        self.nnue_active = self.nnue.weights_loaded && matches!(self.eval_mode, EvalMode::Nnue | EvalMode::Hybrid);
         if self.nnue_active {
             self.nnue.reset(board);
         } else {

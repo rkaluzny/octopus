@@ -161,17 +161,17 @@ if __name__ == '__main__':
     parser.add_argument('--val-dir', type=str, default=None, help='Path to folder with validation .bin files')
     parser.add_argument('--output-dir', type=str, default='./output', help='Output directory')
     
-    parser.add_argument('--epochs', type=int, default=4, help='Number of epochs')
-    parser.add_argument('--batch-size', type=int, default=2048, help='Batch size')
+    parser.add_argument('--epochs', type=int, default=6, help='Number of epochs')
+    parser.add_argument('--batch-size', type=int, default=4096, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
-    parser.add_argument('--weight-decay', type=float, default=5e-6, help='Weight decay')
+    parser.add_argument('--weight-decay', type=float, default=1e-5, help='Weight decay')
     
     parser.add_argument('--accumulator-size', type=int, default=512, help='NNUE accumulator size')
     parser.add_argument('--hidden-size', type=int, default=256, help='Hidden layer size')
     
-    parser.add_argument('--clamp-eval', type=int, default=1500, help='Clamp eval range')
+    parser.add_argument('--clamp-eval', type=int, default=1200, help='Clamp eval range')
     parser.add_argument('--num-workers', type=int, default=4, help='DataLoader workers')
-    parser.add_argument('--log-interval', type=int, default=1, help='Log interval')
+    parser.add_argument('--log-interval', type=int, default=10, help='Log interval')
     parser.add_argument('--save-interval', type=int, default=1, help='Save interval')
     parser.add_argument('--gpu', action='store_true', help='Use GPU if available')
     

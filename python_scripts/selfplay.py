@@ -25,29 +25,29 @@ import signal
 # CONFIG
 
 ENGINE_PATH = "ENGINE_PATH"
-OUTPUT_FILE = "selfplay11.txt"
+OUTPUT_FILE = "selfplay14.txt"
 
 NUM_THREADS = 4
-GAMES_PER_THREAD = 700
+GAMES_PER_THREAD = 5000
 
-MOVETIME_MS = 60
-DEEPER_MOVETIME_MS = 200
+MOVETIME_MS = 50
+DEEPER_MOVETIME_MS = 100
 
-MAX_PLIES = 100
-MIN_PLY_TO_SAVE = 12
+MAX_PLIES = 300
+MIN_PLY_TO_SAVE = 16
 SAMPLE_INTERVAL = 1
 
-RANDOM_MOVE_PROB = 0
+RANDOM_MOVE_PROB = 0.0001
 
-MIN_EVAL = -700
-MAX_EVAL = 700
+MIN_EVAL = -1500
+MAX_EVAL = 1500
 
-STABILITY_THRESHOLD = 100
+STABILITY_THRESHOLD = 90
 
-WRITE_BATCH_SIZE = 500
+WRITE_BATCH_SIZE = 1000
 
 OPENING_BOOK_PGN = "opening.pgn"  # Path to PGN file for opening book, e.g. "openings.pgn"
-OPENING_BOOK_PLIES = 12  # Number of plies to play from opening book
+OPENING_BOOK_PLIES = 16  # Number of plies to play from opening book
 
 stop_event = threading.Event()
 

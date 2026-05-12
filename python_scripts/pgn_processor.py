@@ -17,7 +17,7 @@ import chess.pgn
 INPUT_PGN = "input.pgn"
 OUTPUT_FILE = "positions.txt"
 
-SKIP_FULL_MOVES = 5
+SKIP_FULL_MOVES = 4
 SAMPLE_INTERVAL = 3
 MAX_POSITIONS = 0
 

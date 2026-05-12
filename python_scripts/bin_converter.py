@@ -16,8 +16,8 @@ import chess
 import chess.polyglot
 import struct
 
-INPUT_FILE = "data_txt/lichess8.txt"
-OUTPUT_FILE = "lichess8.bin"
+INPUT_FILE = "lichess10.txt"
+OUTPUT_FILE = "../data/lichess10.bin"
 
 # Format: hash(8) + 6 white piece BBs(8*6) + 6 black piece BBs(8*6) + eval(4) + stm(1) + castling(1) + ep(1) + pad(1)
 STRUCT_FORMAT = "<QQQQQQQQQQQQQiBBBB"  # 13 Qs + i + 4 Bs = 112 bytes
