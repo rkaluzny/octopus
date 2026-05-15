@@ -82,7 +82,11 @@ pub fn run_eval_bench(iterations: usize) {
     let per_eval = elapsed.as_secs_f64() * 1e9 / iterations.max(1) as f64;
 
     println!("bench nnue");
-    println!("  build level: {} ({})", build_info::NNUE_LEVEL, build_info::MICROARCH);
+    println!(
+        "  build level: {} ({})",
+        build_info::NNUE_LEVEL,
+        build_info::MICROARCH
+    );
     println!("  iterations: {}", iterations.max(1));
     println!("  elapsed_ms: {:.3}", elapsed.as_secs_f64() * 1000.0);
     println!("  ns_per_eval: {:.2}", per_eval);
@@ -103,14 +107,26 @@ pub fn run_search_bench(depth: u8, time_ms: u64) {
     let elapsed = start.elapsed();
 
     println!("bench search");
-    println!("  build level: {} ({})", build_info::NNUE_LEVEL, build_info::MICROARCH);
+    println!(
+        "  build level: {} ({})",
+        build_info::NNUE_LEVEL,
+        build_info::MICROARCH
+    );
     println!("  depth: {}", depth);
     println!("  time_limit_ms: {}", time_ms);
     println!("  elapsed_ms: {:.3}", elapsed.as_secs_f64() * 1000.0);
     println!("  nodes: {}", searcher.nodes);
-    println!("  nps: {:.2}", searcher.nodes as f64 / elapsed.as_secs_f64().max(0.001));
+    println!(
+        "  nps: {:.2}",
+        searcher.nodes as f64 / elapsed.as_secs_f64().max(0.001)
+    );
     println!("  seldepth: {}", searcher.seldepth);
-    println!("  bestmove: {}", best_move.map(|m| m.to_uci_string()).unwrap_or_else(|| "0000".to_string()));
+    println!(
+        "  bestmove: {}",
+        best_move
+            .map(|m| m.to_uci_string_for_board(&board, false))
+            .unwrap_or_else(|| "0000".to_string())
+    );
 }
 
 pub fn run_compare_bench(depth: u8, time_ms: u64) {
@@ -136,20 +152,28 @@ pub fn run_compare_bench(depth: u8, time_ms: u64) {
     let nnue_elapsed = start_nnue.elapsed();
 
     println!("bench compare");
-    println!("  build level: {} ({})", build_info::NNUE_LEVEL, build_info::MICROARCH);
+    println!(
+        "  build level: {} ({})",
+        build_info::NNUE_LEVEL,
+        build_info::MICROARCH
+    );
     println!("  depth: {}", depth);
     println!("  time_limit_ms: {}", time_ms);
     println!(
         "  hce:  nodes={} nps={:.2} bestmove={}",
         hce.nodes,
         hce.nodes as f64 / hce_elapsed.as_secs_f64().max(0.001),
-        hce_best.map(|m| m.to_uci_string()).unwrap_or_else(|| "0000".to_string())
+        hce_best
+            .map(|m| m.to_uci_string_for_board(&hce_board, false))
+            .unwrap_or_else(|| "0000".to_string())
     );
     println!(
         "  nnue: nodes={} nps={:.2} bestmove={}",
         nnue.nodes,
         nnue.nodes as f64 / nnue_elapsed.as_secs_f64().max(0.001),
-        nnue_best.map(|m| m.to_uci_string()).unwrap_or_else(|| "0000".to_string())
+        nnue_best
+            .map(|m| m.to_uci_string_for_board(&nnue_board, false))
+            .unwrap_or_else(|| "0000".to_string())
     );
 }
 
@@ -182,7 +206,11 @@ pub fn run_nnue_profile_bench(iterations: usize) {
     let per_eval = elapsed.as_secs_f64() * 1e9 / iterations.max(1) as f64;
 
     println!("NNUE Detailed Profile");
-    println!("  build level: {} ({})", build_info::NNUE_LEVEL, build_info::MICROARCH);
+    println!(
+        "  build level: {} ({})",
+        build_info::NNUE_LEVEL,
+        build_info::MICROARCH
+    );
     println!("  backend: {:?}", nnue.backend);
     println!("  iterations: {}", iterations.max(1));
     println!("  total elapsed_ms: {:.3}", elapsed.as_secs_f64() * 1000.0);
@@ -193,17 +221,25 @@ pub fn run_nnue_profile_bench(iterations: usize) {
     println!("Timing breakdown (average per eval):");
     let total_timed = total_clamp_ns + total_hidden_ns + total_output_ns;
     let iter = iterations.max(1) as f64;
-    println!("  clamp:     {:>8.2} ns ({:.1}%)", 
+    println!(
+        "  clamp:     {:>8.2} ns ({:.1}%)",
         total_clamp_ns as f64 / iter,
-        100.0 * total_clamp_ns as f64 / total_timed as f64);
-    println!("  hidden:    {:>8.2} ns ({:.1}%)", 
+        100.0 * total_clamp_ns as f64 / total_timed as f64
+    );
+    println!(
+        "  hidden:    {:>8.2} ns ({:.1}%)",
         total_hidden_ns as f64 / iter,
-        100.0 * total_hidden_ns as f64 / total_timed as f64);
-    println!("  output:    {:>8.2} ns ({:.1}%)", 
+        100.0 * total_hidden_ns as f64 / total_timed as f64
+    );
+    println!(
+        "  output:    {:>8.2} ns ({:.1}%)",
         total_output_ns as f64 / iter,
-        100.0 * total_output_ns as f64 / total_timed as f64);
+        100.0 * total_output_ns as f64 / total_timed as f64
+    );
     println!("  timed total:{:>8.2} ns", total_timed as f64 / iter);
-    println!("  overhead:  {:>8.2} ns ({:.1}%)", 
+    println!(
+        "  overhead:  {:>8.2} ns ({:.1}%)",
         (per_eval - total_timed as f64 / iter).max(0.0),
-        100.0 * (per_eval - total_timed as f64 / iter).max(0.0) / per_eval);
+        100.0 * (per_eval - total_timed as f64 / iter).max(0.0) / per_eval
+    );
 }

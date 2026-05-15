@@ -122,7 +122,7 @@ impl NnueWeights {
         let hidden_count = hidden_size.checked_mul(accumulator_size.checked_mul(2)?)?;
         let feature_weights_raw = read_i8_vec(&bytes, &mut cursor, feature_count)?;
         let hidden_weights_raw = read_i16_vec(&bytes, &mut cursor, hidden_count)?;
-        
+
         // Transform 1024-wide hidden weights to 512-wide by combining mirrored pairs.
         // Original format: hidden_inputs[i] == hidden_inputs[1023-i], so we combine
         // weights[i] + weights[1023-i] for each pair.
@@ -135,7 +135,7 @@ impl NnueWeights {
                 hidden_weights.push((w1 + w2) as i16);
             }
         }
-        
+
         let hidden_bias_raw = read_i16_vec(&bytes, &mut cursor, hidden_size)?;
         let output_weights_raw = read_i16_vec(&bytes, &mut cursor, hidden_size)?;
         let output_bias_raw = read_i16_vec(&bytes, &mut cursor, 1)?;
@@ -223,7 +223,8 @@ impl NnueEvaluator {
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
                 let path_buf = exe_dir.join(&path_str);
-                if let Some(weights) = NnueWeights::load_from_path(path_buf.to_str().unwrap_or("")) {
+                if let Some(weights) = NnueWeights::load_from_path(path_buf.to_str().unwrap_or(""))
+                {
                     return Self {
                         weights,
                         state: NnueState::default(),
@@ -253,7 +254,10 @@ impl NnueEvaluator {
     }
 
     pub fn reload(&mut self) {
-        eprintln!("NnueEvaluator: Trying to load weights from: {}", self.weights_path);
+        eprintln!(
+            "NnueEvaluator: Trying to load weights from: {}",
+            self.weights_path
+        );
 
         if let Some(weights) = NnueWeights::load_from_path(&self.weights_path) {
             self.weights = weights;
@@ -269,13 +273,19 @@ impl NnueEvaluator {
             eprintln!("NnueEvaluator: Executable path: {:?}", exe_path);
             if let Some(exe_dir) = exe_path.parent() {
                 let path_buf = exe_dir.join(&self.weights_path);
-                eprintln!("NnueEvaluator: Trying executable-relative path: {:?}", path_buf);
-                if let Some(weights) = NnueWeights::load_from_path(path_buf.to_str().unwrap_or("")) {
+                eprintln!(
+                    "NnueEvaluator: Trying executable-relative path: {:?}",
+                    path_buf
+                );
+                if let Some(weights) = NnueWeights::load_from_path(path_buf.to_str().unwrap_or(""))
+                {
                     self.weights = weights;
                     self.weights_loaded = true;
                     self.initialized = false;
                     self.weights_path = path_buf.to_string_lossy().into_owned();
-                    eprintln!("NnueEvaluator: Weights loaded successfully from executable-relative path");
+                    eprintln!(
+                        "NnueEvaluator: Weights loaded successfully from executable-relative path"
+                    );
                     return;
                 }
             }
@@ -294,7 +304,8 @@ impl NnueEvaluator {
             self.initialized = false;
             return;
         }
-        self.state.rebuild_from_board(board, &self.weights, self.backend);
+        self.state
+            .rebuild_from_board(board, &self.weights, self.backend);
         self.undo_stack.clear();
         self.initialized = true;
     }
@@ -414,7 +425,8 @@ impl NnueEvaluator {
             if moving_color == Color::White {
                 self.state.white_king_sq = mv.to as u8;
                 self.state.black_king_sq = board.king_square(Color::Black);
-                self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
+                self.state
+                    .apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
                 self.state.rebuild_side_after_king_move(
                     board,
                     Color::White,
@@ -427,7 +439,8 @@ impl NnueEvaluator {
             } else {
                 self.state.white_king_sq = board.king_square(Color::White);
                 self.state.black_king_sq = mv.to as u8;
-                self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
+                self.state
+                    .apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
                 self.state.rebuild_side_after_king_move(
                     board,
                     Color::Black,
@@ -439,7 +452,8 @@ impl NnueEvaluator {
                 );
             }
         } else {
-            self.state.apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
+            self.state
+                .apply_piece_deltas(&deltas[..len], &self.weights, self.backend, table);
         }
 
         self.undo_stack.push(undo);
@@ -489,9 +503,13 @@ impl NnueEvaluator {
         let mut hidden_inputs = [0i16; HIDDEN_INPUT_SIZE];
         match self.backend {
             #[cfg(target_arch = "x86_64")]
-            EvalBackend::Avx2 => unsafe { clamp_avx2(acc, &mut hidden_inputs); }
+            EvalBackend::Avx2 => unsafe {
+                clamp_avx2(acc, &mut hidden_inputs);
+            },
             #[cfg(target_arch = "x86_64")]
-            EvalBackend::Sse2 => unsafe { clamp_sse2(acc, &mut hidden_inputs); }
+            EvalBackend::Sse2 => unsafe {
+                clamp_sse2(acc, &mut hidden_inputs);
+            },
             _ => clamp_scalar(acc, &mut hidden_inputs),
         }
 
@@ -500,10 +518,10 @@ impl NnueEvaluator {
         match self.backend {
             EvalBackend::Avx2 => unsafe {
                 compute_hidden_layer_avx2(&self.weights, &hidden_inputs, &mut hidden);
-            }
+            },
             EvalBackend::Sse2 => unsafe {
                 compute_hidden_layer_sse2(&self.weights, &hidden_inputs, &mut hidden);
-            }
+            },
             EvalBackend::Scalar => {
                 compute_hidden_layer_scalar(&self.weights, &hidden_inputs, &mut hidden);
             }
@@ -511,8 +529,8 @@ impl NnueEvaluator {
 
         // Output layer - use backend-specific dot product
         let out = match self.backend {
-            EvalBackend::Avx2 => unsafe { dot_product_avx2(&hidden, &self.weights.output_weights) }
-            EvalBackend::Sse2 => unsafe { dot_product_sse2(&hidden, &self.weights.output_weights) }
+            EvalBackend::Avx2 => unsafe { dot_product_avx2(&hidden, &self.weights.output_weights) },
+            EvalBackend::Sse2 => unsafe { dot_product_sse2(&hidden, &self.weights.output_weights) },
             EvalBackend::Scalar => dot_product_scalar(&hidden, &self.weights.output_weights),
         } + self.weights.output_bias as i64;
 
@@ -536,9 +554,13 @@ impl NnueEvaluator {
         let clamp_start = Instant::now();
         match self.backend {
             #[cfg(target_arch = "x86_64")]
-            EvalBackend::Avx2 => unsafe { clamp_avx2(acc, &mut hidden_inputs); }
+            EvalBackend::Avx2 => unsafe {
+                clamp_avx2(acc, &mut hidden_inputs);
+            },
             #[cfg(target_arch = "x86_64")]
-            EvalBackend::Sse2 => unsafe { clamp_sse2(acc, &mut hidden_inputs); }
+            EvalBackend::Sse2 => unsafe {
+                clamp_sse2(acc, &mut hidden_inputs);
+            },
             _ => clamp_scalar(acc, &mut hidden_inputs),
         }
         let clamp_time = clamp_start.elapsed().as_nanos() as u64;
@@ -549,10 +571,10 @@ impl NnueEvaluator {
         match self.backend {
             EvalBackend::Avx2 => unsafe {
                 compute_hidden_layer_avx2(&self.weights, &hidden_inputs, &mut hidden);
-            }
+            },
             EvalBackend::Sse2 => unsafe {
                 compute_hidden_layer_sse2(&self.weights, &hidden_inputs, &mut hidden);
-            }
+            },
             EvalBackend::Scalar => {
                 compute_hidden_layer_scalar(&self.weights, &hidden_inputs, &mut hidden);
             }
@@ -562,8 +584,8 @@ impl NnueEvaluator {
         // Time output layer
         let out_start = Instant::now();
         let out = match self.backend {
-            EvalBackend::Avx2 => unsafe { dot_product_avx2(&hidden, &self.weights.output_weights) }
-            EvalBackend::Sse2 => unsafe { dot_product_sse2(&hidden, &self.weights.output_weights) }
+            EvalBackend::Avx2 => unsafe { dot_product_avx2(&hidden, &self.weights.output_weights) },
+            EvalBackend::Sse2 => unsafe { dot_product_sse2(&hidden, &self.weights.output_weights) },
             EvalBackend::Scalar => dot_product_scalar(&hidden, &self.weights.output_weights),
         } + self.weights.output_bias as i64;
         let output_time = out_start.elapsed().as_nanos() as u64;
@@ -685,11 +707,15 @@ unsafe fn horizontal_sum_i32_avx2(v: __m256i) -> i64 {
 }
 
 #[inline]
-fn compute_hidden_layer_scalar(weights: &NnueWeights, hidden_inputs: &[i16; HIDDEN_INPUT_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
+fn compute_hidden_layer_scalar(
+    weights: &NnueWeights,
+    hidden_inputs: &[i16; HIDDEN_INPUT_SIZE],
+    hidden: &mut [i16; HIDDEN_SIZE],
+) {
     const BIAS_SCALE: i64 = 127;
     const BIAS_OFFSET: i64 = 4064;
     const DIVISOR: i64 = 8128;
-    
+
     for neuron in 0..HIDDEN_SIZE {
         let w = weights.hidden_weights_for_neuron(neuron);
         let mut dot = 0i64;
@@ -697,7 +723,7 @@ fn compute_hidden_layer_scalar(weights: &NnueWeights, hidden_inputs: &[i16; HIDD
         for i in 0..HIDDEN_INPUT_SIZE {
             dot += (hidden_inputs[i] as i64) * (w[i] as i64);
         }
-        
+
         let bias = (weights.hidden_bias[neuron] as i64) * BIAS_SCALE + BIAS_OFFSET;
         let value = ((dot + bias) / DIVISOR) as i32;
         hidden[neuron] = value.clamp(0, 127) as i16;
@@ -706,11 +732,15 @@ fn compute_hidden_layer_scalar(weights: &NnueWeights, hidden_inputs: &[i16; HIDD
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
-unsafe fn compute_hidden_layer_sse2(weights: &NnueWeights, hidden_inputs: &[i16; HIDDEN_INPUT_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
+unsafe fn compute_hidden_layer_sse2(
+    weights: &NnueWeights,
+    hidden_inputs: &[i16; HIDDEN_INPUT_SIZE],
+    hidden: &mut [i16; HIDDEN_SIZE],
+) {
     const BIAS_SCALE: i64 = 127;
     const BIAS_OFFSET: i64 = 4064;
     const DIVISOR: i64 = 8128;
-    
+
     for neuron in 0..HIDDEN_SIZE {
         let w = weights.hidden_weights_for_neuron(neuron);
         let mut sum = _mm_setzero_si128();
@@ -721,7 +751,7 @@ unsafe fn compute_hidden_layer_sse2(weights: &NnueWeights, hidden_inputs: &[i16;
             sum = _mm_add_epi32(sum, _mm_madd_epi16(a, b));
         }
         let dot = horizontal_sum_i32_sse2(sum);
-        
+
         let bias = (weights.hidden_bias[neuron] as i64) * BIAS_SCALE + BIAS_OFFSET;
         let value = ((dot + bias) / DIVISOR) as i32;
         hidden[neuron] = value.clamp(0, 127) as i16;
@@ -730,7 +760,11 @@ unsafe fn compute_hidden_layer_sse2(weights: &NnueWeights, hidden_inputs: &[i16;
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn compute_hidden_layer_avx2(weights: &NnueWeights, hidden_inputs: &[i16; HIDDEN_INPUT_SIZE], hidden: &mut [i16; HIDDEN_SIZE]) {
+unsafe fn compute_hidden_layer_avx2(
+    weights: &NnueWeights,
+    hidden_inputs: &[i16; HIDDEN_INPUT_SIZE],
+    hidden: &mut [i16; HIDDEN_SIZE],
+) {
     const BIAS_SCALE: i64 = 127;
     const BIAS_OFFSET: i64 = 4064;
     const DIVISOR: i64 = 8128;
@@ -745,7 +779,7 @@ unsafe fn compute_hidden_layer_avx2(weights: &NnueWeights, hidden_inputs: &[i16;
             sum = _mm256_add_epi32(sum, _mm256_madd_epi16(a, b));
         }
         let dot = horizontal_sum_i32_avx2(sum);
-        
+
         let bias = (weights.hidden_bias[neuron] as i64) * BIAS_SCALE + BIAS_OFFSET;
         let value = ((dot + bias) / DIVISOR) as i32;
         hidden[neuron] = value.clamp(0, 127) as i16;

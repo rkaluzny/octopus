@@ -12,7 +12,7 @@
 // =============================================================================
 
 use crate::attacks;
-use crate::board::{Board, Color, PieceType, Square};
+use crate::board::{Board, CastleSide, Color, PieceType, Square};
 
 pub const SEE_VALUE: [i32; 6] = [100, 300, 325, 500, 900, 10000];
 
@@ -43,7 +43,13 @@ impl Move {
         capture: Option<PieceType>,
         move_type: MoveType,
     ) -> Self {
-        Self { from, to, promotion, capture, move_type }
+        Self {
+            from,
+            to,
+            promotion,
+            capture,
+            move_type,
+        }
     }
 
     pub fn to_uci_string(&self) -> String {
@@ -62,6 +68,29 @@ impl Move {
         uci
     }
 
+    pub fn to_uci_string_for_board(&self, board: &Board, chess960: bool) -> String {
+        match self.move_type {
+            MoveType::KingCastle | MoveType::QueenCastle if chess960 => {
+                let color = board.get_piece_at(self.from as u8).map(|(_, color)| color);
+                let side = match self.move_type {
+                    MoveType::KingCastle => CastleSide::KingSide,
+                    MoveType::QueenCastle => CastleSide::QueenSide,
+                    _ => unreachable!(),
+                };
+                if let Some(color) = color {
+                    if let Some(rook_sq) = board.castle_rook_square(color, side) {
+                        let mut uci = String::new();
+                        uci.push_str(&square_to_uci_string(self.from));
+                        uci.push_str(&square_to_uci_string(rook_sq));
+                        return uci;
+                    }
+                }
+                self.to_uci_string()
+            }
+            _ => self.to_uci_string(),
+        }
+    }
+
     pub fn from_uci(uci: &str) -> Self {
         let from = uci_str_to_square(&uci[0..2]);
         let to = uci_str_to_square(&uci[2..4]);
@@ -76,14 +105,15 @@ impl Move {
         } else {
             None
         };
-        Self { from, to, promotion, capture: None, move_type: MoveType::Normal }
+        Self {
+            from,
+            to,
+            promotion,
+            capture: None,
+            move_type: MoveType::Normal,
+        }
     }
 }
-
-const WHITE_KING_SIDE_CASTLE: u8 = 0b1000;
-const WHITE_QUEEN_SIDE_CASTLE: u8 = 0b0100;
-const BLACK_KING_SIDE_CASTLE: u8 = 0b0010;
-const BLACK_QUEEN_SIDE_CASTLE: u8 = 0b0001;
 
 pub fn generate_moves(board: &Board) -> Vec<Move> {
     generate_legal_moves(board, false)
@@ -96,7 +126,14 @@ pub fn generate_all_captures(board: &Board) -> Vec<Move> {
 pub fn find_legal_move(board: &Board, uci: &str) -> Option<Move> {
     generate_moves(board)
         .into_iter()
-        .find(|mv| mv.to_uci_string() == uci)
+        .find(|mv| move_matches_uci(board, *mv, uci))
+}
+
+fn move_matches_uci(board: &Board, mv: Move, uci: &str) -> bool {
+    if mv.to_uci_string() == uci {
+        return true;
+    }
+    mv.to_uci_string_for_board(board, true) == uci || mv.to_uci_string_for_board(board, false) == uci
 }
 
 fn generate_legal_moves(board: &Board, captures_only: bool) -> Vec<Move> {
@@ -106,14 +143,62 @@ fn generate_legal_moves(board: &Board, captures_only: bool) -> Vec<Move> {
     let all_pieces = our_pieces | their_pieces;
 
     let mut moves = Vec::new();
-    generate_pawn_moves(&mut moves, board, color, all_pieces, their_pieces, captures_only);
-    generate_knight_moves(&mut moves, board, color, our_pieces, their_pieces, captures_only);
-    generate_sliding_moves(&mut moves, board, color, our_pieces, their_pieces, PieceType::Rook, captures_only);
-    generate_sliding_moves(&mut moves, board, color, our_pieces, their_pieces, PieceType::Bishop, captures_only);
-    generate_sliding_moves(&mut moves, board, color, our_pieces, their_pieces, PieceType::Queen, captures_only);
-    generate_king_moves(&mut moves, board, color, our_pieces, their_pieces, captures_only);
+    generate_pawn_moves(
+        &mut moves,
+        board,
+        color,
+        all_pieces,
+        their_pieces,
+        captures_only,
+    );
+    generate_knight_moves(
+        &mut moves,
+        board,
+        color,
+        our_pieces,
+        their_pieces,
+        captures_only,
+    );
+    generate_sliding_moves(
+        &mut moves,
+        board,
+        color,
+        our_pieces,
+        their_pieces,
+        PieceType::Rook,
+        captures_only,
+    );
+    generate_sliding_moves(
+        &mut moves,
+        board,
+        color,
+        our_pieces,
+        their_pieces,
+        PieceType::Bishop,
+        captures_only,
+    );
+    generate_sliding_moves(
+        &mut moves,
+        board,
+        color,
+        our_pieces,
+        their_pieces,
+        PieceType::Queen,
+        captures_only,
+    );
+    generate_king_moves(
+        &mut moves,
+        board,
+        color,
+        our_pieces,
+        their_pieces,
+        captures_only,
+    );
 
-    moves.into_iter().filter(|mv| is_legal_move(board, *mv)).collect()
+    moves
+        .into_iter()
+        .filter(|mv| is_legal_move(board, *mv))
+        .collect()
 }
 
 pub fn is_move_legal(board: &Board, mv: Move) -> bool {
@@ -163,7 +248,9 @@ fn generate_pawn_moves(
     let promotion_rank = if color == Color::White { 6 } else { 1 };
 
     for from_idx in 0..64u8 {
-        if (pawns >> from_idx) & 1 == 0 { continue; }
+        if (pawns >> from_idx) & 1 == 0 {
+            continue;
+        }
         let from_square = index_to_square(from_idx);
         let rank = from_idx / 8;
 
@@ -177,18 +264,28 @@ fn generate_pawn_moves(
                     if rank == promotion_rank {
                         push_promotions(moves, from_square, to_square, None);
                     } else {
-                        moves.push(Move::new(from_square, to_square, None, None, MoveType::Normal));
+                        moves.push(Move::new(
+                            from_square,
+                            to_square,
+                            None,
+                            None,
+                            MoveType::Normal,
+                        ));
                     }
 
                     let start_rank = if color == Color::White { 1 } else { 6 };
                     if rank == start_rank {
-                        let two_step = from_idx as i8 + if color == Color::White { 16 } else { -16 };
+                        let two_step =
+                            from_idx as i8 + if color == Color::White { 16 } else { -16 };
                         if (0..64).contains(&two_step) {
                             let to_idx_double = two_step as u8;
                             if (all_pieces >> to_idx_double) & 1 == 0 {
                                 moves.push(Move::new(
-                                    from_square, index_to_square(to_idx_double),
-                                    None, None, MoveType::DoublePawnPush,
+                                    from_square,
+                                    index_to_square(to_idx_double),
+                                    None,
+                                    None,
+                                    MoveType::DoublePawnPush,
                                 ));
                             }
                         }
@@ -210,14 +307,26 @@ fn generate_pawn_moves(
             let captured_piece = board.get_piece_at(to_idx).map(|(piece, _)| piece);
 
             if Some(to_square) == board.en_passant && board.get_piece_at(to_idx).is_none() {
-                moves.push(Move::new(from_square, to_square, None, Some(PieceType::Pawn), MoveType::EnPassant));
+                moves.push(Move::new(
+                    from_square,
+                    to_square,
+                    None,
+                    Some(PieceType::Pawn),
+                    MoveType::EnPassant,
+                ));
                 continue;
             }
 
             if rank == promotion_rank {
                 push_promotions(moves, from_square, to_square, captured_piece);
             } else {
-                moves.push(Move::new(from_square, to_square, None, captured_piece, MoveType::Normal));
+                moves.push(Move::new(
+                    from_square,
+                    to_square,
+                    None,
+                    captured_piece,
+                    MoveType::Normal,
+                ));
             }
         }
     }
@@ -231,10 +340,17 @@ fn generate_knight_moves(
     their_pieces: u64,
     captures_only: bool,
 ) {
-    let knights = board.bitboards[PieceType::Knight as usize] & board.color_bitboards[color as usize];
-    generate_piece_moves(moves, board, knights, our_pieces, their_pieces, captures_only, |sq| {
-        attacks::get_knight_attacks(sq)
-    });
+    let knights =
+        board.bitboards[PieceType::Knight as usize] & board.color_bitboards[color as usize];
+    generate_piece_moves(
+        moves,
+        board,
+        knights,
+        our_pieces,
+        their_pieces,
+        captures_only,
+        |sq| attacks::get_knight_attacks(sq),
+    );
 }
 
 fn generate_sliding_moves(
@@ -248,16 +364,23 @@ fn generate_sliding_moves(
 ) {
     let pieces = board.bitboards[piece_type as usize] & board.color_bitboards[color as usize];
     let all_pieces = our_pieces | their_pieces;
-    generate_piece_moves(moves, board, pieces, our_pieces, their_pieces, captures_only, |sq| {
-        match piece_type {
+    generate_piece_moves(
+        moves,
+        board,
+        pieces,
+        our_pieces,
+        their_pieces,
+        captures_only,
+        |sq| match piece_type {
             PieceType::Rook => attacks::get_rook_attacks(sq, all_pieces),
             PieceType::Bishop => attacks::get_bishop_attacks(sq, all_pieces),
             PieceType::Queen => {
-                attacks::get_rook_attacks(sq, all_pieces) | attacks::get_bishop_attacks(sq, all_pieces)
+                attacks::get_rook_attacks(sq, all_pieces)
+                    | attacks::get_bishop_attacks(sq, all_pieces)
             }
             _ => 0,
-        }
-    });
+        },
+    );
 }
 
 fn generate_king_moves(
@@ -269,13 +392,17 @@ fn generate_king_moves(
     captures_only: bool,
 ) {
     let king = board.bitboards[PieceType::King as usize] & board.color_bitboards[color as usize];
-    if king == 0 { return; }
+    if king == 0 {
+        return;
+    }
     let from_idx = king.trailing_zeros() as u8;
     let from_square = index_to_square(from_idx);
     let attacks = attacks::get_king_attacks(from_idx) & !our_pieces;
 
     let mut targets = attacks;
-    if captures_only { targets &= their_pieces; }
+    if captures_only {
+        targets &= their_pieces;
+    }
 
     while targets != 0 {
         let to_idx = targets.trailing_zeros() as u8;
@@ -287,55 +414,105 @@ fn generate_king_moves(
             None
         };
         if !captures_only || captured_piece.is_some() {
-            moves.push(Move::new(from_square, to_square, None, captured_piece, MoveType::Normal));
+            moves.push(Move::new(
+                from_square,
+                to_square,
+                None,
+                captured_piece,
+                MoveType::Normal,
+            ));
         }
     }
 
-    if captures_only { return; }
+    if captures_only {
+        return;
+    }
 
     let enemy = color.opponent();
-    if board.is_square_attacked(from_idx, enemy) { return; }
+    if board.is_square_attacked(from_idx, enemy) {
+        return;
+    }
 
-    match color {
-        Color::White => {
-            if board.castling_rights & WHITE_KING_SIDE_CASTLE != 0
-                && board.get_piece_at(Square::F1 as u8).is_none()
-                && board.get_piece_at(Square::G1 as u8).is_none()
-                && !board.is_square_attacked(Square::F1 as u8, enemy)
-                && !board.is_square_attacked(Square::G1 as u8, enemy)
-            {
-                moves.push(Move::new(Square::E1, Square::G1, None, None, MoveType::KingCastle));
-            }
-            if board.castling_rights & WHITE_QUEEN_SIDE_CASTLE != 0
-                && board.get_piece_at(Square::D1 as u8).is_none()
-                && board.get_piece_at(Square::C1 as u8).is_none()
-                && board.get_piece_at(Square::B1 as u8).is_none()
-                && !board.is_square_attacked(Square::D1 as u8, enemy)
-                && !board.is_square_attacked(Square::C1 as u8, enemy)
-            {
-                moves.push(Move::new(Square::E1, Square::C1, None, None, MoveType::QueenCastle));
-            }
-        }
-        Color::Black => {
-            if board.castling_rights & BLACK_KING_SIDE_CASTLE != 0
-                && board.get_piece_at(Square::F8 as u8).is_none()
-                && board.get_piece_at(Square::G8 as u8).is_none()
-                && !board.is_square_attacked(Square::F8 as u8, enemy)
-                && !board.is_square_attacked(Square::G8 as u8, enemy)
-            {
-                moves.push(Move::new(Square::E8, Square::G8, None, None, MoveType::KingCastle));
-            }
-            if board.castling_rights & BLACK_QUEEN_SIDE_CASTLE != 0
-                && board.get_piece_at(Square::D8 as u8).is_none()
-                && board.get_piece_at(Square::C8 as u8).is_none()
-                && board.get_piece_at(Square::B8 as u8).is_none()
-                && !board.is_square_attacked(Square::D8 as u8, enemy)
-                && !board.is_square_attacked(Square::C8 as u8, enemy)
-            {
-                moves.push(Move::new(Square::E8, Square::C8, None, None, MoveType::QueenCastle));
-            }
+    for side in [CastleSide::KingSide, CastleSide::QueenSide] {
+        if let Some(mv) = generate_castling_move(board, color, side, enemy, from_idx) {
+            moves.push(mv);
         }
     }
+}
+
+fn generate_castling_move(
+    board: &Board,
+    color: Color,
+    side: CastleSide,
+    enemy: Color,
+    king_from_idx: u8,
+) -> Option<Move> {
+    let rook_from = board.castle_rook_square(color, side)?;
+    let rook_from_idx = rook_from as u8;
+    let (king_to, rook_to) = Board::castle_destination(color, side);
+    let king_to_idx = king_to as u8;
+    let rook_to_idx = rook_to as u8;
+
+    if board.get_piece_at(rook_from_idx) != Some((PieceType::Rook, color)) {
+        return None;
+    }
+
+    let rank = king_from_idx / 8;
+    if rook_from_idx / 8 != rank || king_to_idx / 8 != rank || rook_to_idx / 8 != rank {
+        return None;
+    }
+
+    let min_file = king_from_idx
+        .min(rook_from_idx)
+        .min(king_to_idx)
+        .min(rook_to_idx)
+        % 8;
+    let max_file = king_from_idx
+        .max(rook_from_idx)
+        .max(king_to_idx)
+        .max(rook_to_idx)
+        % 8;
+    for file in min_file..=max_file {
+        let sq = rank * 8 + file;
+        if sq != king_from_idx && sq != rook_from_idx && board.get_piece_at(sq).is_some() {
+            return None;
+        }
+    }
+
+    let step = if king_to_idx > king_from_idx {
+        1i8
+    } else {
+        -1i8
+    };
+    let mut sq = king_from_idx as i8;
+    loop {
+        sq += step;
+        let sq_u8 = sq as u8;
+        if sq_u8 == rook_from_idx && sq_u8 != king_to_idx {
+            if sq_u8 == king_to_idx {
+                break;
+            }
+            continue;
+        }
+        if board.is_square_attacked(sq_u8, enemy) {
+            return None;
+        }
+        if sq_u8 == king_to_idx {
+            break;
+        }
+    }
+
+    let move_type = match side {
+        CastleSide::KingSide => MoveType::KingCastle,
+        CastleSide::QueenSide => MoveType::QueenCastle,
+    };
+    Some(Move::new(
+        index_to_square(king_from_idx),
+        king_to,
+        None,
+        None,
+        move_type,
+    ))
 }
 
 fn generate_piece_moves<F>(
@@ -356,7 +533,9 @@ fn generate_piece_moves<F>(
 
         let from_square = index_to_square(from_idx);
         let mut targets = attack_fn(from_idx) & !our_pieces;
-        if captures_only { targets &= their_pieces; }
+        if captures_only {
+            targets &= their_pieces;
+        }
 
         while targets != 0 {
             let to_idx = targets.trailing_zeros() as u8;
@@ -368,15 +547,32 @@ fn generate_piece_moves<F>(
                 None
             };
             if !captures_only || captured_piece.is_some() {
-                moves.push(Move::new(from_square, to_square, None, captured_piece, MoveType::Normal));
+                moves.push(Move::new(
+                    from_square,
+                    to_square,
+                    None,
+                    captured_piece,
+                    MoveType::Normal,
+                ));
             }
         }
     }
 }
 
 fn push_promotions(moves: &mut Vec<Move>, from: Square, to: Square, capture: Option<PieceType>) {
-    for promotion in [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight] {
-        moves.push(Move::new(from, to, Some(promotion), capture, MoveType::Promotion));
+    for promotion in [
+        PieceType::Queen,
+        PieceType::Rook,
+        PieceType::Bishop,
+        PieceType::Knight,
+    ] {
+        moves.push(Move::new(
+            from,
+            to,
+            Some(promotion),
+            capture,
+            MoveType::Promotion,
+        ));
     }
 }
 
@@ -399,7 +595,9 @@ fn verify_sliding_move(board: &Board, mv: &Move) -> bool {
     let is_diagonal = dr.abs() == df.abs() && dr != 0;
     let is_straight = (dr == 0 && df != 0) || (df == 0 && dr != 0);
 
-    if !is_diagonal && !is_straight { return true; }
+    if !is_diagonal && !is_straight {
+        return true;
+    }
 
     let step_r = dr.signum();
     let step_f = df.signum();
@@ -407,9 +605,13 @@ fn verify_sliding_move(board: &Board, mv: &Move) -> bool {
     let mut f = from_file as i8 + step_f;
 
     while (r as u8) != to_idx / 8 || (f as u8) != to_idx % 8 {
-        if r < 0 || r > 7 || f < 0 || f > 7 { return false; }
+        if r < 0 || r > 7 || f < 0 || f > 7 {
+            return false;
+        }
         let sq = (r * 8 + f) as u8;
-        if board.get_piece_at(sq).is_some() { return false; }
+        if board.get_piece_at(sq).is_some() {
+            return false;
+        }
         r += step_r;
         f += step_f;
     }

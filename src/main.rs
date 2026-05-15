@@ -11,15 +11,15 @@
 //
 // =============================================================================
 
-pub mod attacks;
 pub mod accumulator;
-pub mod build_info;
+pub mod attacks;
 pub mod bench;
 pub mod board;
-pub mod features;
+pub mod build_info;
 pub mod evaluation;
-pub mod nnue;
+pub mod features;
 pub mod movegen;
+pub mod nnue;
 pub mod search;
 pub mod uci;
 pub mod zobrist;

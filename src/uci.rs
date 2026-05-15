@@ -19,8 +19,7 @@ use crate::search::{EvalMode, Searcher, DEFAULT_HASH_MB};
 use std::io::{self, BufRead};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
-    Mutex,
+    Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
 
@@ -37,7 +36,11 @@ pub fn uci_loop() {
     let stdin = io::stdin();
     let mut active_search: Option<ActiveSearch> = None;
     let mut hash_mb = DEFAULT_HASH_MB;
-    let searcher = Arc::new(Mutex::new(Searcher::new(Arc::new(AtomicBool::new(false)), hash_mb)));
+    let mut uci_chess960 = false;
+    let searcher = Arc::new(Mutex::new(Searcher::new(
+        Arc::new(AtomicBool::new(false)),
+        hash_mb,
+    )));
 
     for line in stdin.lock().lines() {
         let line = match line {
@@ -59,6 +62,7 @@ pub fn uci_loop() {
                     "option name Hash type spin default {} min {} max {}",
                     DEFAULT_HASH_MB, MIN_HASH_MB, MAX_HASH_MB
                 );
+                println!("option name UCI_Chess960 type check default false");
                 println!("option name EvalMode type combo default HCE var HCE var NNUE var Hybrid");
                 println!("option name NnuePath type string default output/nnue_weights.bin");
                 println!("uciok");
@@ -77,12 +81,18 @@ pub fn uci_loop() {
             "go" => {
                 stop_active_search(&mut active_search);
                 let searcher_clone = Arc::clone(&searcher);
-                active_search = Some(start_search(&board, board.side_to_move, searcher_clone, &mut parts));
+                active_search = Some(start_search(
+                    &board,
+                    board.side_to_move,
+                    searcher_clone,
+                    &mut parts,
+                ));
             }
             "setoption" => {
                 handle_setoption_command(
                     &mut parts,
                     &mut hash_mb,
+                    &mut uci_chess960,
                     &mut active_search,
                     &searcher,
                 );
@@ -171,7 +181,10 @@ fn start_search(
         let best_move = searcher.search(&mut board, params.depth, params.time_limit_ms);
 
         match best_move {
-            Some(mv) => println!("bestmove {}", mv.to_uci_string()),
+            Some(mv) => println!(
+                "bestmove {}",
+                mv.to_uci_string_for_board(&board, searcher.uci_chess960)
+            ),
             None => println!("bestmove 0000"),
         }
     });
@@ -182,6 +195,7 @@ fn start_search(
 fn handle_setoption_command(
     parts: &mut std::str::SplitWhitespace,
     hash_mb: &mut usize,
+    uci_chess960: &mut bool,
     active_search: &mut Option<ActiveSearch>,
     searcher: &Arc<Mutex<Searcher>>,
 ) {
@@ -190,12 +204,16 @@ fn handle_setoption_command(
         return;
     }
 
-    let name_pos = tokens.iter().position(|&token| token.eq_ignore_ascii_case("name"));
+    let name_pos = tokens
+        .iter()
+        .position(|&token| token.eq_ignore_ascii_case("name"));
     let Some(name_pos) = name_pos else {
         return;
     };
 
-    let value_pos = tokens.iter().position(|&token| token.eq_ignore_ascii_case("value"));
+    let value_pos = tokens
+        .iter()
+        .position(|&token| token.eq_ignore_ascii_case("value"));
     let name_tokens = match value_pos {
         Some(pos) if pos > name_pos + 1 => &tokens[name_pos + 1..pos],
         Some(_) => &tokens[name_pos + 1..name_pos + 1],
@@ -209,6 +227,16 @@ fn handle_setoption_command(
                 if let Ok(value) = value_str.parse::<usize>() {
                     *hash_mb = value.clamp(MIN_HASH_MB, MAX_HASH_MB);
                     stop_active_search(active_search);
+                }
+            }
+        }
+    } else if option_name == "uci_chess960" || option_name == "uci chess960" {
+        if let Some(pos) = value_pos {
+            if let Some(value_str) = tokens.get(pos + 1) {
+                let value = value_str.eq_ignore_ascii_case("true") || *value_str == "1";
+                *uci_chess960 = value;
+                if let Ok(mut searcher) = searcher.lock() {
+                    searcher.set_uci_chess960(value);
                 }
             }
         }

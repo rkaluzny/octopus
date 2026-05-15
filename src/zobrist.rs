@@ -11,7 +11,7 @@
 //
 // =============================================================================
 
-use crate::board::{Color, PieceType, Square};
+use crate::board::{CastleSide, CastlingRights, Color, PieceType, Square};
 use lazy_static::lazy_static;
 use rand::{Rng, SeedableRng};
 
@@ -20,7 +20,7 @@ const ZOBRIST_SEED: u64 = 10703728;
 struct ZobristKeys {
     pieces: [[[u64; 64]; 6]; 2],
     side_to_move: u64,
-    castling: [u64; 16],
+    castling: [[u64; 64]; 4],
     en_passant: [u64; 8],
 }
 
@@ -30,12 +30,14 @@ lazy_static! {
         let mut keys = ZobristKeys {
             pieces: [[[0; 64]; 6]; 2],
             side_to_move: rng.gen::<u64>(),
-            castling: [0; 16],
+            castling: [[0; 64]; 4],
             en_passant: [0; 8],
         };
 
-        for i in 0..16 {
-            keys.castling[i] = rng.gen::<u64>();
+        for right in 0..4 {
+            for sq in 0..64 {
+                keys.castling[right][sq] = rng.gen::<u64>();
+            }
         }
         for i in 0..8 {
             keys.en_passant[i] = rng.gen::<u64>();
@@ -59,8 +61,34 @@ pub fn side_to_move_key() -> u64 {
     ZOBRIST.side_to_move
 }
 
-pub fn castling_key(rights: u8) -> u64 {
-    ZOBRIST.castling[rights as usize]
+fn castling_slot(color: Color, side: CastleSide) -> usize {
+    match (color, side) {
+        (Color::White, CastleSide::KingSide) => 0,
+        (Color::White, CastleSide::QueenSide) => 1,
+        (Color::Black, CastleSide::KingSide) => 2,
+        (Color::Black, CastleSide::QueenSide) => 3,
+    }
+}
+
+pub fn castling_key(rights: &CastlingRights) -> u64 {
+    let mut hash = 0;
+    if let Some(square) = rights.white_king_side {
+        hash ^=
+            ZOBRIST.castling[castling_slot(Color::White, CastleSide::KingSide)][square as usize];
+    }
+    if let Some(square) = rights.white_queen_side {
+        hash ^=
+            ZOBRIST.castling[castling_slot(Color::White, CastleSide::QueenSide)][square as usize];
+    }
+    if let Some(square) = rights.black_king_side {
+        hash ^=
+            ZOBRIST.castling[castling_slot(Color::Black, CastleSide::KingSide)][square as usize];
+    }
+    if let Some(square) = rights.black_queen_side {
+        hash ^=
+            ZOBRIST.castling[castling_slot(Color::Black, CastleSide::QueenSide)][square as usize];
+    }
+    hash
 }
 
 pub fn en_passant_key(square: Square) -> Option<u64> {

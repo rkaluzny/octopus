@@ -17,11 +17,12 @@ use crate::board::{Color, PieceType};
 
 pub const INPUT_FEATURES: usize = 768;
 pub const ACCUMULATOR_SIZE: usize = 512;
-pub const HIDDEN_SIZE: usize = 256;
+pub const HIDDEN_SIZE: usize = 128;
 pub const KING_SQUARES: usize = 64;
 pub const PERSPECTIVES: usize = 2;
 
-pub type FeatureIndexTable = [[[[[u16; KING_SQUARES]; 6]; PERSPECTIVES]; KING_SQUARES]; PERSPECTIVES];
+pub type FeatureIndexTable =
+    [[[[[u16; KING_SQUARES]; 6]; PERSPECTIVES]; KING_SQUARES]; PERSPECTIVES];
 
 static FEATURE_INDEX_TABLE: OnceLock<FeatureIndexTable> = OnceLock::new();
 

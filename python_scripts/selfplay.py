@@ -12,6 +12,7 @@
 # =============================================================================
 
 # This script creates selfplay games
+import argparse
 import subprocess
 import threading
 import queue
@@ -25,29 +26,31 @@ import signal
 # CONFIG
 
 ENGINE_PATH = "ENGINE_PATH"
-OUTPUT_FILE = "selfplay14.txt"
+OUTPUT_FILE = "selfplay17.txt"
+VARIANT_MODE = "dfrc"  # standard, frc, dfrc
 
 NUM_THREADS = 4
 GAMES_PER_THREAD = 5000
 
-MOVETIME_MS = 50
-DEEPER_MOVETIME_MS = 100
+MOVETIME_MS = 70
+DEEPER_MOVETIME_MS = 200
 
-MAX_PLIES = 300
-MIN_PLY_TO_SAVE = 16
+MAX_PLIES = 200
+MIN_PLY_TO_SAVE = 3
 SAMPLE_INTERVAL = 1
 
 RANDOM_MOVE_PROB = 0.0001
+RANDOM_OPENING_PLIES = 0
 
-MIN_EVAL = -1500
-MAX_EVAL = 1500
+MIN_EVAL = -1000
+MAX_EVAL = 1000
 
 STABILITY_THRESHOLD = 90
 
 WRITE_BATCH_SIZE = 1000
 
-OPENING_BOOK_PGN = "opening.pgn"  # Path to PGN file for opening book, e.g. "openings.pgn"
-OPENING_BOOK_PLIES = 16  # Number of plies to play from opening book
+OPENING_BOOK_PGN = None  # Path to PGN file for opening book, e.g. "openings.pgn"
+OPENING_BOOK_PLIES = 0  # Number of plies to play from opening book
 
 stop_event = threading.Event()
 
@@ -84,9 +87,73 @@ def get_random_opening(book_games, max_plies):
     return game_moves[:plies_to_play]
 
 
+def generate_random_chess960_backrank():
+    files = list(range(8))
+
+    light_squares = [0, 2, 4, 6]
+    dark_squares = [1, 3, 5, 7]
+    bishop_files = [random.choice(light_squares), random.choice(dark_squares)]
+
+    placement = [None] * 8
+    for file_idx in bishop_files:
+        placement[file_idx] = "B"
+
+    remaining = [file for file in files if placement[file] is None]
+    queen_file = random.choice(remaining)
+    placement[queen_file] = "Q"
+
+    remaining = [file for file in files if placement[file] is None]
+    knight_files = random.sample(remaining, 2)
+    for file_idx in knight_files:
+        placement[file_idx] = "N"
+
+    remaining = sorted(file for file in files if placement[file] is None)
+    placement[remaining[0]] = "R"
+    placement[remaining[1]] = "K"
+    placement[remaining[2]] = "R"
+
+    return "".join(placement)
+
+
+def create_start_board(variant_mode):
+    if variant_mode == "frc":
+        return chess.Board.from_chess960_pos(random.randrange(960))
+    if variant_mode == "dfrc":
+        white_backrank = generate_random_chess960_backrank()
+        black_backrank = generate_random_chess960_backrank().lower()
+        fen = f"{black_backrank}/pppppppp/8/8/8/8/PPPPPPPP/{white_backrank} w KQkq - 0 1"
+        return chess.Board(fen, chess960=True)
+    return chess.Board()
+
+
+def board_to_engine_fen(board, variant_mode):
+    return board.fen(shredder=variant_mode != "standard")
+
+
+def prepare_opening_prefix(board, variant_mode, opening_book_games, random_opening_plies):
+    moves = []
+
+    if variant_mode == "standard" and opening_book_games:
+        opening_moves = get_random_opening(opening_book_games, OPENING_BOOK_PLIES)
+        for uci_move in opening_moves:
+            board.push_uci(uci_move)
+            moves.append(uci_move)
+
+    extra_plies = random.randint(0, max(0, random_opening_plies))
+    for _ in range(extra_plies):
+        legal_moves = list(board.legal_moves)
+        if not legal_moves:
+            break
+        move = random.choice(legal_moves)
+        board.push(move)
+        moves.append(move.uci())
+
+    return moves
+
+
 # ENGINE
 
-def start_engine():
+def start_engine(chess960=False):
     p = subprocess.Popen(
         ENGINE_PATH,
         stdin=subprocess.PIPE,
@@ -98,6 +165,7 @@ def start_engine():
 
     send(p, "uci")
     wait_for(p, "uciok", timeout=10)
+    send(p, f"setoption name UCI_Chess960 value {'true' if chess960 else 'false'}")
     send(p, "isready")
     wait_for(p, "readyok", timeout=10)
 
@@ -178,17 +246,17 @@ def should_save(fen, eval_cp, ply):
 
 # WORKER
 
-def restart_engine(thread_id):
+def restart_engine(thread_id, chess960=False):
     print(f"[T{thread_id}] Restarting engine...")
     try:
-        return start_engine()
+        return start_engine(chess960=chess960)
     except (RuntimeError, TimeoutError, InterruptedError) as e:
         print(f"[T{thread_id}] Failed to restart engine: {e}")
         return None
 
 
-def worker(thread_id, out_queue, opening_book_games=None):
-    engine = restart_engine(thread_id)
+def worker(thread_id, out_queue, variant_mode, opening_book_games=None, random_opening_plies=0):
+    engine = restart_engine(thread_id, variant_mode != "standard")
     if engine is None:
         return
 
@@ -203,33 +271,29 @@ def worker(thread_id, out_queue, opening_book_games=None):
 
         print(f"[T{thread_id}] Game {game+1}/{GAMES_PER_THREAD}")
 
-        board = chess.Board()
-        moves = []
-
-        if opening_book_games:
-            opening_moves = get_random_opening(opening_book_games, OPENING_BOOK_PLIES)
-            for uci_move in opening_moves:
-                board.push_uci(uci_move)
-                moves.append(uci_move)
-            print(f"[T{thread_id}] Applied {len(opening_moves)} opening book moves")
+        board = create_start_board(variant_mode)
+        moves = prepare_opening_prefix(
+            board,
+            variant_mode,
+            opening_book_games,
+            random_opening_plies,
+        )
+        if moves:
+            print(f"[T{thread_id}] Applied {len(moves)} opening plies")
 
         ply = len(moves)
 
         while ply < MAX_PLIES and not stop_event.is_set():
-            if moves:
-                position_cmd = "position startpos moves " + " ".join(moves)
-            else:
-                position_cmd = "position startpos"
+            fen = board_to_engine_fen(board, variant_mode)
+            position_cmd = f"position fen {fen}"
 
             try:
                 send(engine, position_cmd)
             except (RuntimeError, TimeoutError, InterruptedError, OSError):
-                engine = restart_engine(thread_id)
+                engine = restart_engine(thread_id, variant_mode != "standard")
                 if engine is None:
                     return
                 continue
-
-            fen = board.fen()
 
             eval1, bestmove = go_eval(engine, fen, MOVETIME_MS)
             if stop_event.is_set():
@@ -237,7 +301,7 @@ def worker(thread_id, out_queue, opening_book_games=None):
 
             if eval1 is None or bestmove is None:
                 print(f"[T{thread_id}] Engine failed, restarting...")
-                engine = restart_engine(thread_id)
+                engine = restart_engine(thread_id, variant_mode != "standard")
                 if engine is None:
                     return
                 break
@@ -246,7 +310,7 @@ def worker(thread_id, out_queue, opening_book_games=None):
 
             if eval2 is None:
                 print(f"[T{thread_id}] Engine failed on eval2, restarting...")
-                engine = restart_engine(thread_id)
+                engine = restart_engine(thread_id, variant_mode != "standard")
                 if engine is None:
                     return
                 break
@@ -277,7 +341,7 @@ def worker(thread_id, out_queue, opening_book_games=None):
                     send(engine, position_cmd)
                     send(engine, "go movetime 10")
                 except (RuntimeError, TimeoutError, InterruptedError, OSError):
-                    engine = restart_engine(thread_id)
+                    engine = restart_engine(thread_id, variant_mode != "standard")
                     if engine is None:
                         return
                     break
@@ -355,18 +419,40 @@ def signal_handler(sig, frame):
 
 
 def main():
+    global OUTPUT_FILE, NUM_THREADS, GAMES_PER_THREAD, OPENING_BOOK_PGN, OPENING_BOOK_PLIES, RANDOM_OPENING_PLIES
+
+    parser = argparse.ArgumentParser(description="Generate self-play data for Octopus.")
+    parser.add_argument("--variant", choices=["standard", "frc", "dfrc"], default=VARIANT_MODE)
+    parser.add_argument("--output", default=OUTPUT_FILE)
+    parser.add_argument("--opening-book", default=OPENING_BOOK_PGN)
+    parser.add_argument("--opening-book-plies", type=int, default=OPENING_BOOK_PLIES)
+    parser.add_argument("--random-opening-plies", type=int, default=RANDOM_OPENING_PLIES)
+    parser.add_argument("--no-opening-book", action="store_true")
+    parser.add_argument("--threads", type=int, default=NUM_THREADS)
+    parser.add_argument("--games-per-thread", type=int, default=GAMES_PER_THREAD)
+    args = parser.parse_args()
+
     signal.signal(signal.SIGINT, signal_handler)
     start = time.time()
+    OUTPUT_FILE = args.output
+    NUM_THREADS = args.threads
+    GAMES_PER_THREAD = args.games_per_thread
+    OPENING_BOOK_PGN = args.opening_book
+    OPENING_BOOK_PLIES = args.opening_book_plies
+    RANDOM_OPENING_PLIES = args.random_opening_plies
 
     opening_book_games = []
-    if OPENING_BOOK_PGN:
+    if args.variant == "standard" and not args.no_opening_book and OPENING_BOOK_PGN:
         opening_book_games = load_opening_book(OPENING_BOOK_PGN)
 
     out_queue = queue.Queue(maxsize=10000)
 
     threads = []
     for i in range(NUM_THREADS):
-        t = threading.Thread(target=worker, args=(i, out_queue, opening_book_games))
+        t = threading.Thread(
+            target=worker,
+            args=(i, out_queue, args.variant, opening_book_games, RANDOM_OPENING_PLIES),
+        )
         t.start()
         threads.append(t)
 

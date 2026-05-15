@@ -15,8 +15,8 @@
 
 use crate::board::{Board, Color, PieceType};
 use crate::features::{feature_index_table, FeatureIndexTable, ACCUMULATOR_SIZE};
-use crate::nnue::{EvalBackend, NnueWeights};
 use crate::movegen::{Move, MoveType};
+use crate::nnue::{EvalBackend, NnueWeights};
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -68,7 +68,12 @@ impl Default for PieceDelta {
 }
 
 impl NnueState {
-    pub fn rebuild_from_board(&mut self, board: &Board, weights: &NnueWeights, backend: EvalBackend) {
+    pub fn rebuild_from_board(
+        &mut self,
+        board: &Board,
+        weights: &NnueWeights,
+        backend: EvalBackend,
+    ) {
         self.white.fill(0);
         self.black.fill(0);
         self.white_king_sq = board.king_square(Color::White);
@@ -89,7 +94,11 @@ impl NnueState {
             }
 
             for color_idx in 0..2 {
-                let color = if color_idx == 0 { Color::White } else { Color::Black };
+                let color = if color_idx == 0 {
+                    Color::White
+                } else {
+                    Color::Black
+                };
                 let mut pieces = board.bitboards[piece_idx] & board.color_bitboards[color_idx];
                 while pieces != 0 {
                     let square = pieces.trailing_zeros() as u8;
@@ -116,7 +125,15 @@ impl NnueState {
         table: &FeatureIndexTable,
     ) {
         for delta in deltas {
-            self.apply_piece_delta(delta.piece_color, delta.piece, delta.square, delta.sign, weights, backend, table);
+            self.apply_piece_delta(
+                delta.piece_color,
+                delta.piece,
+                delta.square,
+                delta.sign,
+                weights,
+                backend,
+                table,
+            );
         }
     }
 
@@ -135,8 +152,26 @@ impl NnueState {
             return;
         }
         let delta = if sign >= 0 { 1 } else { -1 };
-        self.apply_piece_delta_for_side(Color::White, piece_color, piece, square, delta, backend, weights, table);
-        self.apply_piece_delta_for_side(Color::Black, piece_color, piece, square, delta, backend, weights, table);
+        self.apply_piece_delta_for_side(
+            Color::White,
+            piece_color,
+            piece,
+            square,
+            delta,
+            backend,
+            weights,
+            table,
+        );
+        self.apply_piece_delta_for_side(
+            Color::Black,
+            piece_color,
+            piece,
+            square,
+            delta,
+            backend,
+            weights,
+            table,
+        );
     }
 
     #[inline(always)]
@@ -269,17 +304,24 @@ impl NnueState {
             }
 
             for color_idx in 0..2 {
-                let piece_color = if color_idx == 0 { Color::White } else { Color::Black };
+                let piece_color = if color_idx == 0 {
+                    Color::White
+                } else {
+                    Color::Black
+                };
                 let mut pieces = board.bitboards[piece_idx] & board.color_bitboards[color_idx];
                 while pieces != 0 {
                     let square = pieces.trailing_zeros() as u8;
-                    if mv.capture.is_some() && piece_color != moving_color && square == mv.to as u8 {
+                    if mv.capture.is_some() && piece_color != moving_color && square == mv.to as u8
+                    {
                         pieces &= pieces - 1;
                         continue;
                     }
                     if piece == PieceType::Rook && piece_color == moving_color {
                         match mv.move_type {
-                            MoveType::KingCastle if square == 63 && moving_color == Color::White => {
+                            MoveType::KingCastle
+                                if square == 63 && moving_color == Color::White =>
+                            {
                                 pieces &= pieces - 1;
                                 continue;
                             }
@@ -287,11 +329,15 @@ impl NnueState {
                                 pieces &= pieces - 1;
                                 continue;
                             }
-                            MoveType::QueenCastle if square == 56 && moving_color == Color::White => {
+                            MoveType::QueenCastle
+                                if square == 56 && moving_color == Color::White =>
+                            {
                                 pieces &= pieces - 1;
                                 continue;
                             }
-                            MoveType::QueenCastle if square == 0 && moving_color == Color::Black => {
+                            MoveType::QueenCastle
+                                if square == 0 && moving_color == Color::Black =>
+                            {
                                 pieces &= pieces - 1;
                                 continue;
                             }
@@ -358,7 +404,11 @@ impl NnueState {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
-unsafe fn apply_piece_delta_sse2(acc: &mut [i32; ACCUMULATOR_SIZE], feature_weights: &[i8], delta: i32) {
+unsafe fn apply_piece_delta_sse2(
+    acc: &mut [i32; ACCUMULATOR_SIZE],
+    feature_weights: &[i8],
+    delta: i32,
+) {
     let delta_vec = _mm_set1_epi32(delta);
     let zero = _mm_setzero_si128();
 
@@ -401,7 +451,11 @@ unsafe fn apply_piece_delta_sse2(acc: &mut [i32; ACCUMULATOR_SIZE], feature_weig
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn apply_piece_delta_avx2(acc: &mut [i32; ACCUMULATOR_SIZE], feature_weights: &[i8], delta: i32) {
+unsafe fn apply_piece_delta_avx2(
+    acc: &mut [i32; ACCUMULATOR_SIZE],
+    feature_weights: &[i8],
+    delta: i32,
+) {
     let delta_vec = _mm256_set1_epi32(delta);
 
     for i in (0..ACCUMULATOR_SIZE).step_by(8) {

@@ -99,6 +99,7 @@ pub struct Searcher {
     pub history_piece: [[[i32; 64]; 64]; 6], // [piece][from][to]
     pub counter_move: [[Option<Move>; 64]; 64], // [from][to] of opponent's previous move
     pub counter_move_history: [[i32; 64]; 6], // [piece][to_sq] counter-move history bonus
+    pub uci_chess960: bool,
     position_stack: Vec<u64>,
     pub seldepth: u8,
     max_seldepth: u8,
@@ -194,6 +195,7 @@ impl Searcher {
             history_piece: [[[0; 64]; 64]; 6],
             counter_move: [[None; 64]; 64],
             counter_move_history: [[0; 64]; 6],
+            uci_chess960: false,
             position_stack: Vec::with_capacity(128),
             seldepth: 0,
             max_seldepth: 0,
@@ -217,6 +219,10 @@ impl Searcher {
         if self.nnue.weights_loaded && matches!(self.eval_mode, EvalMode::Nnue | EvalMode::Hybrid) {
             // Will be properly initialized in reset_search_state
         }
+    }
+
+    pub fn set_uci_chess960(&mut self, enabled: bool) {
+        self.uci_chess960 = enabled;
     }
 
     fn make_tt(hash_mb: usize) -> (Vec<TTSlot>, usize) {
@@ -312,7 +318,7 @@ impl Searcher {
 
             let score = loop {
                 local_pv.clear();
-            let score = self.negamax_root(board, depth, local_alpha, local_beta, &mut local_pv);
+                let score = self.negamax_root(board, depth, local_alpha, local_beta, &mut local_pv);
                 if self.should_stop() {
                     break score;
                 }
@@ -338,7 +344,7 @@ impl Searcher {
                 pv_line = local_pv;
                 self.prev_iteration_score = score;
             }
-            self.print_info(depth, best_score, &pv_line);
+            self.print_info(board, depth, best_score, &pv_line);
         }
         self.history_aging_counter += 1;
         if self.history_aging_counter >= 8 {
@@ -670,7 +676,8 @@ impl Searcher {
                     && !is_pv;
                 let reduction = if use_lmr {
                     // Increased aggressiveness: base formula + 1 reduction for moves after 6th
-                    let base_reduction = ((depth as u16 / 3) + (move_count as u16 / 6)).min(3) as u8;
+                    let base_reduction =
+                        ((depth as u16 / 3) + (move_count as u16 / 6)).min(3) as u8;
                     let additional = if move_count > 6 { 1 } else { 0 };
                     (base_reduction + additional).min(depth - 1)
                 } else {
@@ -781,7 +788,8 @@ impl Searcher {
         self.start_time = Instant::now();
         self.seldepth = 0;
         self.max_seldepth = 0;
-        self.nnue_active = self.nnue.weights_loaded && matches!(self.eval_mode, EvalMode::Nnue | EvalMode::Hybrid);
+        self.nnue_active =
+            self.nnue.weights_loaded && matches!(self.eval_mode, EvalMode::Nnue | EvalMode::Hybrid);
         if self.nnue_active {
             self.nnue.reset(board);
         } else {
@@ -811,7 +819,9 @@ impl Searcher {
                 return beta;
             }
             // Delta pruning with dynamic margin
-            let delta_margin = DELTA_PRUNING_MARGIN + (stand_pat.abs() / 10) + if self.nnue_active { 40 } else { 0 };
+            let delta_margin = DELTA_PRUNING_MARGIN
+                + (stand_pat.abs() / 10)
+                + if self.nnue_active { 40 } else { 0 };
             if stand_pat + delta_margin < alpha {
                 return stand_pat + delta_margin;
             }
@@ -824,18 +834,26 @@ impl Searcher {
             // In QS, normally only generate captures
             // But in first ply of QS, also generate quiet checks to reduce horizon effect
             let mut all_moves = movegen::generate_all_captures(board);
-            
+
             // Add quiet checks if this is early in QS (ply indicates depth in QS)
             let quiet_check_depth = if self.nnue_active { 2 } else { 3 };
             if ply < quiet_check_depth {
                 let enemy_king_sq = {
                     let enemy_color = board.side_to_move.opponent();
-                    let king_bb = board.bitboards[PieceType::King as usize] & board.color_bitboards[enemy_color as usize];
-                    if king_bb == 0 { 0 } else { king_bb.trailing_zeros() as u8 }
+                    let king_bb = board.bitboards[PieceType::King as usize]
+                        & board.color_bitboards[enemy_color as usize];
+                    if king_bb == 0 {
+                        0
+                    } else {
+                        king_bb.trailing_zeros() as u8
+                    }
                 };
                 let all_possible = movegen::generate_moves(board);
                 for mv in all_possible {
-                    if mv.capture.is_none() && mv.promotion.is_none() && mv.move_type == movegen::MoveType::Normal {
+                    if mv.capture.is_none()
+                        && mv.promotion.is_none()
+                        && mv.move_type == movegen::MoveType::Normal
+                    {
                         // Fast check test without cloning board
                         // Get piece from board using from square
                         let from_sq = mv.from as u8;
@@ -855,11 +873,38 @@ impl Searcher {
                         };
                         let to_sq = mv.to as u8;
                         let gives_check = match piece {
-                            PieceType::Pawn => (attacks::get_pawn_attacks(to_sq, board.side_to_move) & (1u64 << enemy_king_sq)) != 0,
-                            PieceType::Knight => (attacks::get_knight_attacks(to_sq) & (1u64 << enemy_king_sq)) != 0,
-                            PieceType::Bishop => (attacks::get_bishop_attacks(to_sq, board.color_bitboards[0] | board.color_bitboards[1]) & (1u64 << enemy_king_sq)) != 0,
-                            PieceType::Rook => (attacks::get_rook_attacks(to_sq, board.color_bitboards[0] | board.color_bitboards[1]) & (1u64 << enemy_king_sq)) != 0,
-                            PieceType::Queen => ((attacks::get_bishop_attacks(to_sq, board.color_bitboards[0] | board.color_bitboards[1]) | attacks::get_rook_attacks(to_sq, board.color_bitboards[0] | board.color_bitboards[1])) & (1u64 << enemy_king_sq)) != 0,
+                            PieceType::Pawn => {
+                                (attacks::get_pawn_attacks(to_sq, board.side_to_move)
+                                    & (1u64 << enemy_king_sq))
+                                    != 0
+                            }
+                            PieceType::Knight => {
+                                (attacks::get_knight_attacks(to_sq) & (1u64 << enemy_king_sq)) != 0
+                            }
+                            PieceType::Bishop => {
+                                (attacks::get_bishop_attacks(
+                                    to_sq,
+                                    board.color_bitboards[0] | board.color_bitboards[1],
+                                ) & (1u64 << enemy_king_sq))
+                                    != 0
+                            }
+                            PieceType::Rook => {
+                                (attacks::get_rook_attacks(
+                                    to_sq,
+                                    board.color_bitboards[0] | board.color_bitboards[1],
+                                ) & (1u64 << enemy_king_sq))
+                                    != 0
+                            }
+                            PieceType::Queen => {
+                                ((attacks::get_bishop_attacks(
+                                    to_sq,
+                                    board.color_bitboards[0] | board.color_bitboards[1],
+                                ) | attacks::get_rook_attacks(
+                                    to_sq,
+                                    board.color_bitboards[0] | board.color_bitboards[1],
+                                )) & (1u64 << enemy_king_sq))
+                                    != 0
+                            }
                             _ => false,
                         };
                         if gives_check {
@@ -868,7 +913,7 @@ impl Searcher {
                     }
                 }
             }
-            
+
             all_moves
         };
         if moves.is_empty() {
@@ -918,10 +963,8 @@ impl Searcher {
         if len <= 1 {
             return false;
         }
-        // Check last 12 positions (enough for 3-fold repetition)
-        let start = if len > 12 { len - 12 } else { 0 };
         let mut count = 0;
-        for &h in &stack[start..len-1] {
+        for &h in &stack[..len - 1] {
             if h == hash {
                 count += 1;
                 if count >= 2 {
@@ -1034,17 +1077,16 @@ impl Searcher {
     fn tt_put(&mut self, key: u64, entry: TTEntry) {
         let idx = (key as usize) & self.tt_mask;
         let slot = &mut self.tt[idx];
-        
+
         // If same key, always replace (depth may be higher or exact flag better)
         if slot.key == key {
             slot.entry = entry;
         } else {
             // Different key: use depth-preferred replacement for PV nodes,
             // but always replace if new entry is deeper or old entry is from a previous search age
-            let should_replace = 
-                entry.depth >= slot.entry.depth ||  // New entry is deeper
-                slot.entry.age < self.age;           // Old entry is from previous search iteration(s)
-            
+            let should_replace = entry.depth >= slot.entry.depth ||  // New entry is deeper
+                slot.entry.age < self.age; // Old entry is from previous search iteration(s)
+
             if should_replace {
                 slot.key = key;
                 slot.entry = entry;
@@ -1052,13 +1094,13 @@ impl Searcher {
         }
     }
 
-    fn print_info(&self, depth: u8, score: i32, pv_line: &[Move]) {
+    fn print_info(&self, board: &Board, depth: u8, score: i32, pv_line: &[Move]) {
         let elapsed_ms = self.start_time.elapsed().as_millis().max(1);
         let nps = (self.nodes as u128 * 1000 / elapsed_ms) as u64;
         let score_string = format_score(score);
         let pv_string = pv_line
             .iter()
-            .map(|mv| mv.to_uci_string())
+            .map(|mv| mv.to_uci_string_for_board(board, self.uci_chess960))
             .collect::<Vec<_>>()
             .join(" ");
         println!(
@@ -1138,5 +1180,25 @@ mod tests {
 
         assert!(score > NEG_INF / 2, "expected a finite score, got {score}");
         assert!(score < INF / 2, "expected a finite score, got {score}");
+    }
+
+    #[test]
+    fn repetition_scan_reaches_beyond_twelve_positions() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let searcher = Searcher::new(stop, DEFAULT_HASH_MB);
+
+        let repeated_hash = 0xCAFE_BABE_u64;
+        let mut stack = Vec::new();
+        stack.push(repeated_hash);
+        for value in 1..=12u64 {
+            stack.push(value);
+        }
+        stack.push(repeated_hash);
+        stack.push(repeated_hash);
+
+        let mut searcher = searcher;
+        searcher.position_stack = stack;
+
+        assert!(searcher.is_repetition(repeated_hash));
     }
 }

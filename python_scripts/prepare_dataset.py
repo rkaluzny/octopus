@@ -22,8 +22,8 @@ INPUT_FOLDER = "../data"
 TRAIN_FILE = "plankton_train.bin"
 VAL_FILE = "plankton_val.bin"
 
-VAL_SPLIT = 0.05
-RANDOM_SEED = 5252
+VAL_SPLIT = 0.01
+RANDOM_SEED = 2372
 
 # Format: hash(8) + 6 white piece BBs(8*6) + 6 black piece BBs(8*6) + eval(4) + stm(1) + castling(1) + ep(1) + pad(1)
 STRUCT_FORMAT = "<QQQQQQQQQQQQQiBBBB"  # 13 Qs + i + 4 Bs = 112 bytes

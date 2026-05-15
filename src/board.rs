@@ -49,24 +49,145 @@ pub enum PieceType {
 #[allow(dead_code)]
 #[repr(u8)]
 pub enum Square {
-    A1, B1, C1, D1, E1, F1, G1, H1,
-    A2, B2, C2, D2, E2, F2, G2, H2,
-    A3, B3, C3, D3, E3, F3, G3, H3,
-    A4, B4, C4, D4, E4, F4, G4, H4,
-    A5, B5, C5, D5, E5, F5, G5, H5,
-    A6, B6, C6, D6, E6, F6, G6, H6,
-    A7, B7, C7, D7, E7, F7, G7, H7,
-    A8, B8, C8, D8, E8, F8, G8, H8,
+    A1,
+    B1,
+    C1,
+    D1,
+    E1,
+    F1,
+    G1,
+    H1,
+    A2,
+    B2,
+    C2,
+    D2,
+    E2,
+    F2,
+    G2,
+    H2,
+    A3,
+    B3,
+    C3,
+    D3,
+    E3,
+    F3,
+    G3,
+    H3,
+    A4,
+    B4,
+    C4,
+    D4,
+    E4,
+    F4,
+    G4,
+    H4,
+    A5,
+    B5,
+    C5,
+    D5,
+    E5,
+    F5,
+    G5,
+    H5,
+    A6,
+    B6,
+    C6,
+    D6,
+    E6,
+    F6,
+    G6,
+    H6,
+    A7,
+    B7,
+    C7,
+    D7,
+    E7,
+    F7,
+    G7,
+    H7,
+    A8,
+    B8,
+    C8,
+    D8,
+    E8,
+    F8,
+    G8,
+    H8,
     NoSquare,
 }
 
 pub const STARTING_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-// Castling rights: bit 3=WK, bit 2=WQ, bit 1=BK, bit 0=BQ
-const WHITE_KING_SIDE_CASTLE: u8 = 0b1000;
-const WHITE_QUEEN_SIDE_CASTLE: u8 = 0b0100;
-const BLACK_KING_SIDE_CASTLE: u8 = 0b0010;
-const BLACK_QUEEN_SIDE_CASTLE: u8 = 0b0001;
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CastleSide {
+    KingSide,
+    QueenSide,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CastlingRights {
+    pub white_king_side: Option<Square>,
+    pub white_queen_side: Option<Square>,
+    pub black_king_side: Option<Square>,
+    pub black_queen_side: Option<Square>,
+}
+
+impl CastlingRights {
+    pub fn empty() -> Self {
+        Self {
+            white_king_side: None,
+            white_queen_side: None,
+            black_king_side: None,
+            black_queen_side: None,
+        }
+    }
+
+    pub fn get(&self, color: Color, side: CastleSide) -> Option<Square> {
+        match (color, side) {
+            (Color::White, CastleSide::KingSide) => self.white_king_side,
+            (Color::White, CastleSide::QueenSide) => self.white_queen_side,
+            (Color::Black, CastleSide::KingSide) => self.black_king_side,
+            (Color::Black, CastleSide::QueenSide) => self.black_queen_side,
+        }
+    }
+
+    pub fn set(&mut self, color: Color, side: CastleSide, rook_square: Square) {
+        match (color, side) {
+            (Color::White, CastleSide::KingSide) => self.white_king_side = Some(rook_square),
+            (Color::White, CastleSide::QueenSide) => self.white_queen_side = Some(rook_square),
+            (Color::Black, CastleSide::KingSide) => self.black_king_side = Some(rook_square),
+            (Color::Black, CastleSide::QueenSide) => self.black_queen_side = Some(rook_square),
+        }
+    }
+
+    pub fn clear_color(&mut self, color: Color) {
+        match color {
+            Color::White => {
+                self.white_king_side = None;
+                self.white_queen_side = None;
+            }
+            Color::Black => {
+                self.black_king_side = None;
+                self.black_queen_side = None;
+            }
+        }
+    }
+
+    pub fn clear_square(&mut self, color: Color, square: Square) {
+        if self.get(color, CastleSide::KingSide) == Some(square) {
+            match color {
+                Color::White => self.white_king_side = None,
+                Color::Black => self.black_king_side = None,
+            }
+        }
+        if self.get(color, CastleSide::QueenSide) == Some(square) {
+            match color {
+                Color::White => self.white_queen_side = None,
+                Color::Black => self.black_queen_side = None,
+            }
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 pub struct Board {
@@ -74,7 +195,7 @@ pub struct Board {
     pub color_bitboards: [Bitboard; 2],
     pub side_to_move: Color,
     pub en_passant: Option<Square>,
-    pub castling_rights: u8,
+    pub castling_rights: CastlingRights,
     pub hash: u64,
     pub piece_on_square: [Option<PieceType>; 64],
     pub color_on_square: [Option<Color>; 64],
@@ -87,7 +208,7 @@ pub struct Undo {
     pub color_bitboards: [Bitboard; 2],
     pub side_to_move: Color,
     pub en_passant: Option<Square>,
-    pub castling_rights: u8,
+    pub castling_rights: CastlingRights,
     pub hash: u64,
     pub piece_on_square: [Option<PieceType>; 64],
     pub color_on_square: [Option<Color>; 64],
@@ -104,7 +225,7 @@ impl Board {
             color_bitboards: [0; 2],
             side_to_move: Color::White,
             en_passant: None,
-            castling_rights: 0,
+            castling_rights: CastlingRights::empty(),
             hash: 0,
             piece_on_square: [None; 64],
             color_on_square: [None; 64],
@@ -151,16 +272,78 @@ impl Board {
             Color::Black
         };
 
+        let white_king_sq = board.king_square(Color::White);
+        let black_king_sq = board.king_square(Color::Black);
+
         // Castling rights
         let castling = parts.next().ok_or("Missing castling rights")?;
-        for c in castling.chars() {
-            match c {
-                'K' => board.castling_rights |= WHITE_KING_SIDE_CASTLE,
-                'Q' => board.castling_rights |= WHITE_QUEEN_SIDE_CASTLE,
-                'k' => board.castling_rights |= BLACK_KING_SIDE_CASTLE,
-                'q' => board.castling_rights |= BLACK_QUEEN_SIDE_CASTLE,
-                '-' => {}
-                _ => return Err("Invalid castling rights in FEN"),
+        if castling != "-" {
+            for c in castling.chars() {
+                match c {
+                    'K' => {
+                        let rook_sq = Self::castle_rook_square_for_side(
+                            &board,
+                            Color::White,
+                            CastleSide::KingSide,
+                            white_king_sq,
+                        )?;
+                        board
+                            .castling_rights
+                            .set(Color::White, CastleSide::KingSide, rook_sq);
+                    }
+                    'Q' => {
+                        let rook_sq = Self::castle_rook_square_for_side(
+                            &board,
+                            Color::White,
+                            CastleSide::QueenSide,
+                            white_king_sq,
+                        )?;
+                        board
+                            .castling_rights
+                            .set(Color::White, CastleSide::QueenSide, rook_sq);
+                    }
+                    'k' => {
+                        let rook_sq = Self::castle_rook_square_for_side(
+                            &board,
+                            Color::Black,
+                            CastleSide::KingSide,
+                            black_king_sq,
+                        )?;
+                        board
+                            .castling_rights
+                            .set(Color::Black, CastleSide::KingSide, rook_sq);
+                    }
+                    'q' => {
+                        let rook_sq = Self::castle_rook_square_for_side(
+                            &board,
+                            Color::Black,
+                            CastleSide::QueenSide,
+                            black_king_sq,
+                        )?;
+                        board
+                            .castling_rights
+                            .set(Color::Black, CastleSide::QueenSide, rook_sq);
+                    }
+                    'A'..='H' => {
+                        let rook_sq = Self::square_from_file_rank(c, 0)?;
+                        let side = if rook_sq as u8 > white_king_sq {
+                            CastleSide::KingSide
+                        } else {
+                            CastleSide::QueenSide
+                        };
+                        board.castling_rights.set(Color::White, side, rook_sq);
+                    }
+                    'a'..='h' => {
+                        let rook_sq = Self::square_from_file_rank(c, 7)?;
+                        let side = if rook_sq as u8 > black_king_sq {
+                            CastleSide::KingSide
+                        } else {
+                            CastleSide::QueenSide
+                        };
+                        board.castling_rights.set(Color::Black, side, rook_sq);
+                    }
+                    _ => return Err("Invalid castling rights in FEN"),
+                }
             }
         }
 
@@ -173,6 +356,65 @@ impl Board {
 
         board.hash = board.calculate_hash();
         Ok(board)
+    }
+
+    fn square_from_file_rank(file_char: char, rank: u8) -> Result<Square, &'static str> {
+        let file = file_char.to_ascii_lowercase() as u8;
+        if !(b'a'..=b'h').contains(&file) || rank > 7 {
+            return Err("Invalid castling rights in FEN");
+        }
+        Ok(unsafe { std::mem::transmute(rank * 8 + (file - b'a')) })
+    }
+
+    fn king_square_opt(&self, color: Color) -> Option<u8> {
+        let king_bb =
+            self.bitboards[PieceType::King as usize] & self.color_bitboards[color as usize];
+        if king_bb == 0 {
+            None
+        } else {
+            Some(king_bb.trailing_zeros() as u8)
+        }
+    }
+
+    pub fn castle_rook_square(&self, color: Color, side: CastleSide) -> Option<Square> {
+        self.castling_rights.get(color, side)
+    }
+
+    pub fn castle_destination(color: Color, side: CastleSide) -> (Square, Square) {
+        match (color, side) {
+            (Color::White, CastleSide::KingSide) => (Square::G1, Square::F1),
+            (Color::White, CastleSide::QueenSide) => (Square::C1, Square::D1),
+            (Color::Black, CastleSide::KingSide) => (Square::G8, Square::F8),
+            (Color::Black, CastleSide::QueenSide) => (Square::C8, Square::D8),
+        }
+    }
+
+    fn castle_rook_square_for_side(
+        board: &Board,
+        color: Color,
+        side: CastleSide,
+        king_sq: u8,
+    ) -> Result<Square, &'static str> {
+        let rank = match color {
+            Color::White => 0,
+            Color::Black => 7,
+        };
+        let king_file = king_sq % 8;
+        let mut candidate = None;
+        for file in 0..8u8 {
+            let sq = unsafe { std::mem::transmute(rank * 8 + file) };
+            if let Some((piece, piece_color)) = board.get_piece_at(sq as u8) {
+                if piece == PieceType::Rook && piece_color == color {
+                    let is_kingside = file > king_file;
+                    if (side == CastleSide::KingSide && is_kingside)
+                        || (side == CastleSide::QueenSide && !is_kingside)
+                    {
+                        candidate = Some(sq);
+                    }
+                }
+            }
+        }
+        candidate.ok_or("Invalid castling rights in FEN")
     }
 
     fn set_piece(&mut self, piece: PieceType, color: Color, bit: Bitboard) {
@@ -211,7 +453,8 @@ impl Board {
     }
 
     pub fn king_square(&self, color: Color) -> u8 {
-        let king_bb = self.bitboards[PieceType::King as usize] & self.color_bitboards[color as usize];
+        let king_bb =
+            self.bitboards[PieceType::King as usize] & self.color_bitboards[color as usize];
         king_bb.trailing_zeros() as u8
     }
 
@@ -221,46 +464,71 @@ impl Board {
         let from_bit = 1 << (mv.from as u8);
         let to_bit = 1 << (mv.to as u8);
         let (piece_moving, color_moving) = self.get_piece_at(mv.from as u8).unwrap();
+        let captured_piece_info =
+            if mv.move_type == MoveType::KingCastle || mv.move_type == MoveType::QueenCastle {
+                None
+            } else {
+                self.get_piece_at(mv.to as u8)
+            };
 
         self.remove_piece(piece_moving, color_moving, from_bit);
 
-        // Handle captures
-        if let Some((captured_piece, captured_color)) = self.get_piece_at(mv.to as u8) {
-            self.remove_piece(captured_piece, captured_color, to_bit);
-        } else if mv.move_type == MoveType::EnPassant {
-            let captured_pawn_sq = if color_moving == Color::White {
-                mv.to as u8 - 8
-            } else {
-                mv.to as u8 + 8
-            };
-            self.remove_piece(PieceType::Pawn, color_moving.opponent(), 1 << captured_pawn_sq);
-        }
-
-        // Place piece at destination
-        let piece_to_add = mv.promotion.unwrap_or(piece_moving);
-        self.set_piece(piece_to_add, color_moving, to_bit);
-
-        // Handle castling rook movement
         match mv.move_type {
             MoveType::KingCastle => {
-                let (rook_from_sq, rook_to_sq) = if color_moving == Color::White {
-                    (Square::H1, Square::F1)
-                } else {
-                    (Square::H8, Square::F8)
-                };
-                self.remove_piece(PieceType::Rook, color_moving, 1 << (rook_from_sq as u8));
-                self.set_piece(PieceType::Rook, color_moving, 1 << (rook_to_sq as u8));
+                let rook_from_sq = self
+                    .castle_rook_square(color_moving, CastleSide::KingSide)
+                    .expect("missing kingside rook for castling move");
+                let (_, rook_to_sq) = Self::castle_destination(color_moving, CastleSide::KingSide);
+                if rook_from_sq == mv.to {
+                    self.remove_piece(PieceType::Rook, color_moving, to_bit);
+                }
+                let piece_to_add = mv.promotion.unwrap_or(piece_moving);
+                self.set_piece(piece_to_add, color_moving, to_bit);
+                if rook_from_sq != rook_to_sq {
+                    if rook_from_sq != mv.to {
+                        self.remove_piece(PieceType::Rook, color_moving, 1 << (rook_from_sq as u8));
+                    }
+                    self.set_piece(PieceType::Rook, color_moving, 1 << (rook_to_sq as u8));
+                }
             }
             MoveType::QueenCastle => {
-                let (rook_from_sq, rook_to_sq) = if color_moving == Color::White {
-                    (Square::A1, Square::D1)
-                } else {
-                    (Square::A8, Square::D8)
-                };
-                self.remove_piece(PieceType::Rook, color_moving, 1 << (rook_from_sq as u8));
-                self.set_piece(PieceType::Rook, color_moving, 1 << (rook_to_sq as u8));
+                let rook_from_sq = self
+                    .castle_rook_square(color_moving, CastleSide::QueenSide)
+                    .expect("missing queenside rook for castling move");
+                let (_, rook_to_sq) = Self::castle_destination(color_moving, CastleSide::QueenSide);
+                if rook_from_sq == mv.to {
+                    self.remove_piece(PieceType::Rook, color_moving, to_bit);
+                }
+                let piece_to_add = mv.promotion.unwrap_or(piece_moving);
+                self.set_piece(piece_to_add, color_moving, to_bit);
+                if rook_from_sq != rook_to_sq {
+                    if rook_from_sq != mv.to {
+                        self.remove_piece(PieceType::Rook, color_moving, 1 << (rook_from_sq as u8));
+                    }
+                    self.set_piece(PieceType::Rook, color_moving, 1 << (rook_to_sq as u8));
+                }
             }
-            _ => {}
+            _ => {
+                // Handle captures
+                if let Some((captured_piece, captured_color)) = captured_piece_info {
+                    self.remove_piece(captured_piece, captured_color, to_bit);
+                } else if mv.move_type == MoveType::EnPassant {
+                    let captured_pawn_sq = if color_moving == Color::White {
+                        mv.to as u8 - 8
+                    } else {
+                        mv.to as u8 + 8
+                    };
+                    self.remove_piece(
+                        PieceType::Pawn,
+                        color_moving.opponent(),
+                        1 << captured_pawn_sq,
+                    );
+                }
+
+                // Place piece at destination
+                let piece_to_add = mv.promotion.unwrap_or(piece_moving);
+                self.set_piece(piece_to_add, color_moving, to_bit);
+            }
         }
 
         // Update side to move
@@ -280,25 +548,15 @@ impl Board {
         // Update castling rights
         let mut new_rights = self.castling_rights;
         if piece_moving == PieceType::King {
-            if color_moving == Color::White {
-                new_rights &= !WHITE_KING_SIDE_CASTLE;
-                new_rights &= !WHITE_QUEEN_SIDE_CASTLE;
-            } else {
-                new_rights &= !BLACK_KING_SIDE_CASTLE;
-                new_rights &= !BLACK_QUEEN_SIDE_CASTLE;
+            new_rights.clear_color(color_moving);
+        }
+        if let Some((captured_piece, captured_color)) = captured_piece_info {
+            if captured_piece == PieceType::Rook {
+                new_rights.clear_square(captured_color, mv.to);
             }
         }
-        if from_bit == (1 << Square::A1 as u8) || to_bit == (1 << Square::A1 as u8) {
-            new_rights &= !WHITE_QUEEN_SIDE_CASTLE;
-        }
-        if from_bit == (1 << Square::H1 as u8) || to_bit == (1 << Square::H1 as u8) {
-            new_rights &= !WHITE_KING_SIDE_CASTLE;
-        }
-        if from_bit == (1 << Square::A8 as u8) || to_bit == (1 << Square::A8 as u8) {
-            new_rights &= !BLACK_QUEEN_SIDE_CASTLE;
-        }
-        if from_bit == (1 << Square::H8 as u8) || to_bit == (1 << Square::H8 as u8) {
-            new_rights &= !BLACK_KING_SIDE_CASTLE;
+        if piece_moving == PieceType::Rook {
+            new_rights.clear_square(color_moving, mv.from);
         }
         self.castling_rights = new_rights;
 
@@ -368,32 +626,38 @@ impl Board {
             }
         }
 
-        self.hash ^= zobrist::castling_key(self.castling_rights);
+        self.hash ^= zobrist::castling_key(&self.castling_rights);
 
         let (piece_moving, color_moving) = self.get_piece_at(mv.from as u8).unwrap();
         self.hash ^= zobrist::piece_key(piece_moving, color_moving, mv.from as u8);
 
-        if let Some((captured_piece, captured_color)) = self.get_piece_at(mv.to as u8) {
-            self.hash ^= zobrist::piece_key(captured_piece, captured_color, mv.to as u8);
-        } else if mv.move_type == MoveType::EnPassant {
-            let captured_pawn_sq = if color_moving == Color::White {
-                mv.to as u8 - 8
-            } else {
-                mv.to as u8 + 8
-            };
-            self.hash ^= zobrist::piece_key(PieceType::Pawn, color_moving.opponent(), captured_pawn_sq);
-        }
-
         match mv.move_type {
             MoveType::KingCastle => {
-                let rook_from_sq = if color_moving == Color::White { Square::H1 } else { Square::H8 };
+                let rook_from_sq = self
+                    .castle_rook_square(color_moving, CastleSide::KingSide)
+                    .expect("missing kingside rook for castling hash");
                 self.hash ^= zobrist::piece_key(PieceType::Rook, color_moving, rook_from_sq as u8);
             }
             MoveType::QueenCastle => {
-                let rook_from_sq = if color_moving == Color::White { Square::A1 } else { Square::A8 };
+                let rook_from_sq = self
+                    .castle_rook_square(color_moving, CastleSide::QueenSide)
+                    .expect("missing queenside rook for castling hash");
                 self.hash ^= zobrist::piece_key(PieceType::Rook, color_moving, rook_from_sq as u8);
             }
-            _ => {}
+            MoveType::EnPassant => {
+                let captured_pawn_sq = if color_moving == Color::White {
+                    mv.to as u8 - 8
+                } else {
+                    mv.to as u8 + 8
+                };
+                self.hash ^=
+                    zobrist::piece_key(PieceType::Pawn, color_moving.opponent(), captured_pawn_sq);
+            }
+            _ => {
+                if let Some((captured_piece, captured_color)) = self.get_piece_at(mv.to as u8) {
+                    self.hash ^= zobrist::piece_key(captured_piece, captured_color, mv.to as u8);
+                }
+            }
         }
     }
 
@@ -409,11 +673,19 @@ impl Board {
 
         match mv.move_type {
             MoveType::KingCastle => {
-                let rook_to_sq = if color_moving == Color::White { Square::F1 } else { Square::F8 };
+                let rook_to_sq = if color_moving == Color::White {
+                    Square::F1
+                } else {
+                    Square::F8
+                };
                 self.hash ^= zobrist::piece_key(PieceType::Rook, color_moving, rook_to_sq as u8);
             }
             MoveType::QueenCastle => {
-                let rook_to_sq = if color_moving == Color::White { Square::D1 } else { Square::D8 };
+                let rook_to_sq = if color_moving == Color::White {
+                    Square::D1
+                } else {
+                    Square::D8
+                };
                 self.hash ^= zobrist::piece_key(PieceType::Rook, color_moving, rook_to_sq as u8);
             }
             _ => {}
@@ -425,7 +697,7 @@ impl Board {
             }
         }
 
-        self.hash ^= zobrist::castling_key(self.castling_rights);
+        self.hash ^= zobrist::castling_key(&self.castling_rights);
     }
 
     pub fn calculate_hash(&self) -> u64 {
@@ -447,7 +719,7 @@ impl Board {
             hash ^= zobrist::side_to_move_key();
         }
 
-        hash ^= zobrist::castling_key(self.castling_rights);
+        hash ^= zobrist::castling_key(&self.castling_rights);
 
         if let Some(en_passant_sq) = self.en_passant {
             if let Some(ep_key) = zobrist::en_passant_key(en_passant_sq) {
@@ -495,14 +767,44 @@ impl Board {
         }
 
         fen.push(' ');
-        fen.push(if self.side_to_move == Color::White { 'w' } else { 'b' });
+        fen.push(if self.side_to_move == Color::White {
+            'w'
+        } else {
+            'b'
+        });
         fen.push(' ');
 
+        let white_king_sq = self.king_square_opt(Color::White);
+        let black_king_sq = self.king_square_opt(Color::Black);
         let mut castling_str = String::new();
-        if self.castling_rights & WHITE_KING_SIDE_CASTLE != 0 { castling_str.push('K'); }
-        if self.castling_rights & WHITE_QUEEN_SIDE_CASTLE != 0 { castling_str.push('Q'); }
-        if self.castling_rights & BLACK_KING_SIDE_CASTLE != 0 { castling_str.push('k'); }
-        if self.castling_rights & BLACK_QUEEN_SIDE_CASTLE != 0 { castling_str.push('q'); }
+        if let Some(rook_sq) = self.castling_rights.white_king_side {
+            if white_king_sq == Some(Square::E1 as u8) && rook_sq == Square::H1 {
+                castling_str.push('K');
+            } else {
+                castling_str.push(((rook_sq as u8 % 8) + b'A') as char);
+            }
+        }
+        if let Some(rook_sq) = self.castling_rights.white_queen_side {
+            if white_king_sq == Some(Square::E1 as u8) && rook_sq == Square::A1 {
+                castling_str.push('Q');
+            } else {
+                castling_str.push(((rook_sq as u8 % 8) + b'A') as char);
+            }
+        }
+        if let Some(rook_sq) = self.castling_rights.black_king_side {
+            if black_king_sq == Some(Square::E8 as u8) && rook_sq == Square::H8 {
+                castling_str.push('k');
+            } else {
+                castling_str.push(((rook_sq as u8 % 8) + b'a') as char);
+            }
+        }
+        if let Some(rook_sq) = self.castling_rights.black_queen_side {
+            if black_king_sq == Some(Square::E8 as u8) && rook_sq == Square::A8 {
+                castling_str.push('q');
+            } else {
+                castling_str.push(((rook_sq as u8 % 8) + b'a') as char);
+            }
+        }
         if castling_str.is_empty() {
             fen.push('-');
         } else {
@@ -542,19 +844,41 @@ impl Board {
 
         if (attacks::get_pawn_attacks(sq, attacker_color.opponent())
             & self.bitboards[PieceType::Pawn as usize]
-            & self.color_bitboards[attacker_color as usize]) != 0 { return true; }
+            & self.color_bitboards[attacker_color as usize])
+            != 0
+        {
+            return true;
+        }
         if (attacks::get_knight_attacks(sq)
             & self.bitboards[PieceType::Knight as usize]
-            & self.color_bitboards[attacker_color as usize]) != 0 { return true; }
+            & self.color_bitboards[attacker_color as usize])
+            != 0
+        {
+            return true;
+        }
         if (attacks::get_king_attacks(sq)
             & self.bitboards[PieceType::King as usize]
-            & self.color_bitboards[attacker_color as usize]) != 0 { return true; }
+            & self.color_bitboards[attacker_color as usize])
+            != 0
+        {
+            return true;
+        }
         if (attacks::get_rook_attacks(sq, all_pieces)
-            & (self.bitboards[PieceType::Rook as usize] | self.bitboards[PieceType::Queen as usize])
-            & self.color_bitboards[attacker_color as usize]) != 0 { return true; }
+            & (self.bitboards[PieceType::Rook as usize]
+                | self.bitboards[PieceType::Queen as usize])
+            & self.color_bitboards[attacker_color as usize])
+            != 0
+        {
+            return true;
+        }
         if (attacks::get_bishop_attacks(sq, all_pieces)
-            & (self.bitboards[PieceType::Bishop as usize] | self.bitboards[PieceType::Queen as usize])
-            & self.color_bitboards[attacker_color as usize]) != 0 { return true; }
+            & (self.bitboards[PieceType::Bishop as usize]
+                | self.bitboards[PieceType::Queen as usize])
+            & self.color_bitboards[attacker_color as usize])
+            != 0
+        {
+            return true;
+        }
 
         false
     }
@@ -594,5 +918,71 @@ impl fmt::Display for Board {
             board_str.push('\n');
         }
         write!(f, "{}", board_str)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::movegen;
+
+    const CHESS960_CASTLE_FEN: &str = "2r1k2r/8/8/8/8/8/8/2R1K2R w CHch - 0 1";
+    const CHESS960_WHITE_CASTLE_FEN: &str = "4k3/8/8/8/8/8/8/2R1K2R w CH - 0 1";
+
+    #[test]
+    fn parses_chess960_castling_rights_and_normalizes_fen() {
+        let board = Board::from_fen(CHESS960_CASTLE_FEN).expect("valid chess960 FEN");
+
+        assert_eq!(board.castling_rights.white_queen_side, Some(Square::C1));
+        assert_eq!(board.castling_rights.white_king_side, Some(Square::H1));
+        assert_eq!(board.castling_rights.black_queen_side, Some(Square::C8));
+        assert_eq!(board.castling_rights.black_king_side, Some(Square::H8));
+
+        let normalized = board.to_fen();
+        let roundtrip = Board::from_fen(&normalized).expect("roundtrip FEN should parse");
+
+        assert_eq!(roundtrip.hash, board.hash);
+        assert_eq!(roundtrip.to_fen(), normalized);
+    }
+
+    #[test]
+    fn castling_rights_change_the_hash() {
+        let with_rights = Board::from_fen(CHESS960_WHITE_CASTLE_FEN).expect("valid chess960 FEN");
+        let without_rights = Board::from_fen("4k3/8/8/8/8/8/8/2R1K2R w - - 0 1")
+            .expect("valid FEN without castling rights");
+
+        assert_ne!(with_rights.hash, without_rights.hash);
+    }
+
+    #[test]
+    fn chess960_castle_moves_rook_from_king_destination() {
+        let mut board = Board::from_fen(CHESS960_WHITE_CASTLE_FEN).expect("valid chess960 FEN");
+        let original_fen = board.to_fen();
+        let original_hash = board.hash;
+
+        let castle =
+            movegen::find_legal_move(&board, "e1c1").expect("queen-side castle should be legal");
+        assert_eq!(castle.move_type, MoveType::QueenCastle);
+
+        let undo = board.make_move(&castle);
+
+        assert_eq!(
+            board.get_piece_at(Square::C1 as u8),
+            Some((PieceType::King, Color::White))
+        );
+        assert_eq!(
+            board.get_piece_at(Square::D1 as u8),
+            Some((PieceType::Rook, Color::White))
+        );
+        assert_eq!(board.get_piece_at(Square::E1 as u8), None);
+        assert_eq!(
+            board.get_piece_at(Square::H1 as u8),
+            Some((PieceType::Rook, Color::White))
+        );
+
+        board.unmake_move(undo);
+
+        assert_eq!(board.to_fen(), original_fen);
+        assert_eq!(board.hash, original_hash);
     }
 }
